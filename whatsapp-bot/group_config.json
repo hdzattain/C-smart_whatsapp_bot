@@ -1,0 +1,75 @@
+{
+  "groups": {
+    "120363418441024423@g.us": {
+      "activeBots": [
+        "epermit-bot"
+      ],
+      "triggers": {},
+      "dify": {
+        "mode": "agent",
+        "agent": {
+          "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS"
+        },
+        "workflow": {
+          "id": "",
+          "apiKey": ""
+        },
+        "epermitAgentApiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS"
+      },
+      "meta": {
+        "name": "PTW LiftShaft TEST",
+        "lastSeenAt": 1755076614229
+      }
+    },
+    "120363400601106571@g.us": {
+      "activeBots": [
+        "epermit-bot"
+      ],
+      "triggers": {},
+      "dify": {
+        "mode": "agent",
+        "agent": {
+          "apiKey": ""
+        },
+        "workflow": {
+          "id": "",
+          "apiKey": ""
+        },
+        "epermitAgentApiKey": ""
+      },
+      "meta": {
+        "name": "TEST_C-Smart_Bot",
+        "createdAt": 1755074713650,
+        "lastSeenAt": 1755074713650
+      }
+    },
+    "120363030675916527@g.us": {
+      "activeBots": [
+        "epermit-bot"
+      ],
+      "triggers": {},
+      "dify": {
+        "mode": "agent",
+        "agent": {
+          "apiKey": ""
+        },
+        "workflow": {
+          "id": "",
+          "apiKey": ""
+        },
+        "epermitAgentApiKey": ""
+      },
+      "meta": {
+        "name": "啟德醫院 B 𨋢膽第一線",
+        "createdAt": 1755076950015,
+        "lastSeenAt": 1755076950015
+      }
+    }
+  },
+  "120363418441024423@g.us": {
+    "botType": "epermit-bot"
+  },
+  "120363030675916527@g.us": {
+    "botType": "epermit-bot"
+  }
+}
