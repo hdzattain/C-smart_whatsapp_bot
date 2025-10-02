@@ -1,0 +1,73 @@
+{
+  "groups": {
+    "120363421021492466@g.us": {
+      "botType": "insp-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg"
+        },
+        "workflow": {
+          "id": "6c9eec51-e5f0-4c42-9956-350daca42471",
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg"
+        }
+      }
+    },
+    "120363403358685987@g.us": {
+      "botType": "summary-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS"
+        },
+        "workflow": {
+          "id": "318935a7-59f9-4761-bcca-60e707b83236",
+          "apiKey": "app-gRWS6vn8Mzq0PCBA0KTFZ4l3"
+        }
+      }
+    },
+    "120363404700610525@g.us": {
+      "botType": "epermit-bot",
+      "dify": {
+        "mode": "agent",
+        "agent": {
+          "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS"
+        },
+        "workflow": {
+          "id": "",
+          "apiKey": ""
+        }
+      }
+    },
+    "120363392011055168@g.us": {
+      "botType": "insp-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS",
+          "appId": "2cf7a289-1c7d-41fe-a892-fe8b2e4f8c64"
+        },
+        "workflow": {
+          "workflowId": "6c9eec51-e5f0-4c42-9956-350daca42471",
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
+        }
+      }
+    }
+  },
+  "default": {
+    "botType": "insp-bot",
+    "dify": {
+      "mode": "workflow",
+      "agent": {
+        "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS",
+        "appId": "2cf7a289-1c7d-41fe-a892-fe8b2e4f8c64"
+      },
+      "workflow": {
+        "workflowId": "6c9eec51-e5f0-4c42-9956-350daca42471",
+        "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+        "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
+      }
+    }
+  }
+}
