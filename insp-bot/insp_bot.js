@@ -1387,7 +1387,9 @@ client.on('message', async msg => {
 
     const chat = await msg.getChat();
     const isGroup = chat.isGroup;
-    console.log(`[LOG] 收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}`);
+    const groupName = isGroup ? chat.name : '非群組';
+    console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
+    appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     if (!isGroup) {
       console.log('[LOG] 不是群聊消息，不回复用户');
       return;
