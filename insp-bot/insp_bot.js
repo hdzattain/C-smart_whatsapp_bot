@@ -1002,7 +1002,10 @@ async function handleSummaryBot(msg, groupId) {
   const chat = await msg.getChat();
   if (!chat.isGroup) return;
 
-  const body = (msg.body || '').trim();
+  body = (msg.body || '').trim();
+  console.log(`[LOG] 原始消息内容: ${body}`);
+  body = await parseMessageMentionsNumber(msg, body);
+  console.log(`[LOG] parseMessageMentionsNumber处理后的消息内容: ${body}`);
   const senderId = msg.author || msg.from;
 
   tasksStore[groupId] = tasksStore[groupId] || [];
@@ -1359,6 +1362,49 @@ async function parseMessageMentions(msg, body = '') {
   return result;
 }
 
+// 解析消息中的 @ 标签，合法 WhatsApp ID 转换为纯数字，不合法保持原样
+async function parseMessageMentionsNumber(msg, body = '') {
+  // 安全检查
+  if (!msg || !body) {
+    console.error('[ERR] Message or body is not available');
+    return body || '';
+  }
+
+  // 获取提到的用户列表
+  const mentions = await msg.getMentions();
+  if (!mentions || mentions.length === 0) {
+    console.log('[DEBUG] 没有找到 mentions');
+    return body;
+  }
+
+  // 调试 mentions 数据
+  console.log('[DEBUG] 获取到的 mentions:', JSON.stringify(mentions, null, 2));
+
+  // 构建 number 列表，按 mentions 顺序排列
+  const numbers = mentions.map(contact => contact.number || contact.id.user);
+  console.log('[DEBUG] 映射的 numbers:', numbers);
+
+  // 替换所有 @数字，按顺序匹配
+  let result = body;
+  const mentionRegex = /@(\d+)/g;
+  let mentionIndex = 0;
+
+  result = result.replace(mentionRegex, (match, id) => {
+    console.log(`[DEBUG] 处理匹配: ${match}, ID: ${id}, 索引: ${mentionIndex}`);
+    if (mentionIndex < numbers.length) {
+      const replacement = `@${numbers[mentionIndex]}`;
+      console.log(`[DEBUG] 替换: ${match} -> ${replacement}`);
+      mentionIndex++;
+      return replacement;
+    } else {
+      console.log(`[DEBUG] 跳过: 索引 ${mentionIndex} 超出 numbers 长度`);
+      return match;
+    }
+  });
+
+  console.log(`[DEBUG] 处理后的结果: ${result}`);
+  return result;
+}
 
 const client = new Client({
   authStrategy: new LocalAuth({
