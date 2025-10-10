@@ -10,16 +10,6 @@ from typing import Optional
 
 app = Flask(__name__)
 
-# --- Config  deprecated---
-# DB_CONFIG = {
-#     "host": "rm-3ns8u64164878eu6i6o.mysql.rds.aliyuncs.com",
-#     "port": 3306,
-#     "user": "aitest",
-#     "password": "G4!u7G231a1o",
-#     "database": "ai_test",
-#     "charset": "utf8mb4",
-#     "cursorclass": pymysql.cursors.DictCursor
-# }
 DB_CONFIG = {
     "host": "10.25.0.42",
     "port": 3306,
@@ -347,7 +337,6 @@ def update_by_condition():
         print("Query error:", str(e))
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
-
 @app.route("/records/<int:record_id>", methods=["PUT"])
 def update_record(record_id):
     data = request.get_json(force=True)
@@ -389,8 +378,6 @@ def delete_records():
     if deleted == 0:
         return jsonify({"error": f"未找到匹配的记录"}), 404
     return jsonify({"status": "ok", "deleted_count": deleted})
-    rows = execute_query("SHOW TABLES", fetch=True)
-    return jsonify({"tables": [list(row.values())[0] for row in rows]})
 
 @app.route("/delete_fastgpt_records", methods=["POST"])
 def delete_fastgpt_records():
