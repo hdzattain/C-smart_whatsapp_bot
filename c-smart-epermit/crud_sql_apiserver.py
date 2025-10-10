@@ -272,6 +272,11 @@ def update_by_condition():
     if not filters or not updates:
         return jsonify({"error": "请提供 'where' 和 'set' 字段"}), 400
 
+    print("Received filters:", filters)
+    print("Received updates:", updates)
+    print("FIELDS:", FIELDS)
+
+    string_fields = {"location", "subcontractor", "floor", "group_id"}
     conditions = []
     params = []
     for key, value in filters.items():
@@ -283,9 +288,13 @@ def update_by_condition():
                     conditions.append(f"`{key}` BETWEEN %s AND %s")
                     params.extend([start, end])
                     continue
-            # 添加 TRIM 和 LOWER 以处理字符串匹配问题（如隐藏空格或大小写）
-            conditions.append(f"LOWER(REGEXP_REPLACE(`{key}`, '\s+', '')) = LOWER(REGEXP_REPLACE(%s, '\s+', ''))")
+            if key in string_fields:
+                conditions.append(f"BINARY `{key}` = %s")
+            else:
+                conditions.append(f"`{key}` = %s")
             params.append(value)
+        else:
+            print(f"Warning: Field {key} not in FIELDS")
 
     if not conditions:
         return jsonify({"error": "无有效过滤条件字段"}), 400
@@ -296,16 +305,48 @@ def update_by_condition():
         if key in FIELDS:
             update_clause.append(f"`{key}` = %s")
             update_params.append(value)
+        else:
+            print(f"Warning: Update field {key} not in FIELDS")
+
     if not update_clause:
         return jsonify({"error": "无可更新字段"}), 400
 
     sql = f"UPDATE `{TABLE_NAME}` SET {', '.join(update_clause)} WHERE {' AND '.join(conditions)}"
     total_params = tuple(update_params + params)
-    count = execute_query(sql, total_params)
+    
+    print("SQL:", sql)
+    print("Params:", total_params)
+    
+    select_sql = f"SELECT * FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
+    print("Debug SELECT SQL:", select_sql)
+    print("Debug SELECT Params:", params)
+    
+    try:
+        # 执行 SELECT 查询，设置 fetch=True 获取结果集
+        select_result = execute_query(select_sql, params, fetch=True)
+        select_count = len(select_result) if select_result else 0
+        print("SELECT result count:", select_count)
+        
+        # 如果记录存在，返回成功（即使更新没有影响行）
+        if select_count > 0:
+            count = execute_query(sql, total_params, fetch=False)
+            return jsonify({
+                "status": "ok",
+                "updated_count": count,
+                "message": "记录存在，无需更新" if count == 0 else "更新成功"
+            })
+        else:
+            return jsonify({
+                "error": "未找到匹配记录",
+                "sql": sql,
+                "params": total_params,
+                "select_sql": select_sql,
+                "select_params": params
+            }), 404
+    except Exception as e:
+        print("Query error:", str(e))
+        return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
-    if count == 0:
-        return jsonify({"error": "未找到匹配记录"}), 404
-    return jsonify({"status": "ok", "updated_count": count})
 
 @app.route("/records/<int:record_id>", methods=["PUT"])
 def update_record(record_id):
