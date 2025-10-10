@@ -20,6 +20,59 @@ const FASTGPT_API_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions
 const FASTGPT_API_KEY = 'openapi-ziUjnlzVwlIvEITHVZ9M4XXmMLBtyjbgTBZbybRS3xI5HtNyuSOKIlIZl9Qb';
 const BOT_NAME      = process.env.BOT_NAME || 'C-SMART'; // 机器人昵称
 
+const TIME_SEGMENTS = [
+  { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+  { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+];
+
+/**
+ * 群組格式配置，支持不同群組的摘要格式。
+ */
+const GROUP_FORMATS = {
+  [GROUP_ID]: {
+    title: 'LiftShaft (Permit to Work)',
+    guidelines: [
+      '升降機槽工作許可證填妥及齊簽名視為開工',
+      '✅❎為中建影安全相，⭕❌為分判影安全相',
+      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
+    ],
+    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+    timeSegments: [
+      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+    ]
+  },
+  [GROUP_ID_2]: {
+    title: 'External Scaffolding Work(Permit to work)',
+    guidelines: [
+      '外牆棚工作許可證填妥及齊簽名視為開工',
+      '✅❎為中建影安全相，⭕❌為分判影安全相',
+      '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
+    ],
+    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+    timeSegments: [
+      { name: '上午', start: 360, end: 660, field: 'morning' }, // 06:00-11:00
+      { name: '飯前', start: 660, end: 720, field: 'morning' }, // 11:00-12:00
+      { name: '飯後', start: 720, end: 840, field: 'afternoon' }, // 12:00-14:00
+      { name: '下午', start: 840, end: 1320, field: 'afternoon' } // 14:00-22:00
+    ]
+  },
+  // 未來群組可在此添加自定義格式
+  default: {
+    title: 'LiftShaft (Permit to Work)',
+    guidelines: [
+      '升降機槽工作許可證填妥及齊簽名視為開工',
+      '✅❎為中建影安全相，⭕❌為分判影安全相',
+      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
+    ],
+    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+    timeSegments: [
+      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+    ]
+  }
+};
+
 const TMP_DIR  = path.join(__dirname, 'tmp');
 fs.ensureDirSync(TMP_DIR);
 
@@ -58,20 +111,30 @@ function containsSummaryKeyword(text) {
   return keywords.some(k => text.includes(k));
 }
 
-// —— 后端返回数据的处理函数 ——  
-function parseDate(dtStr) {
-  // 尝试用 Date 解析，否则截取前 10 个字符  
-  const d = new Date(dtStr);
-  if (!isNaN(d)) {
-    return d.toISOString().slice(0, 10);
+/**
+ * 解析 bstudio_create_time 的日期。
+ * @param {string} timeStr - 時間字符串，格式為 "Tue, 12 Aug 2025 09:53:39 GMT"
+ * @returns {string} - 格式化日期字符串 (YYYY-MM-DD)
+ */
+function parseDate(timeStr) {
+  if (!timeStr) return '未知';
+  try {
+    const date = new Date(timeStr);
+    if (isNaN(date.getTime())) return '未知';
+    return date.toISOString().split('T')[0];
+  } catch (e) {
+    return '未知';
   }
-  return dtStr.slice(0, 10);
 }
 
+
+/**
+ * 安全轉換布爾值或數字為 ✅ 或 ❎。
+ * @param {boolean|number|string} val - 要轉換的值
+ * @returns {string} - ✅ 或 ❎
+ */
 function safeVal(val) {
-  if (val === 1) return '✅';
-  if (val === 0) return '❎';
-  return String(val);
+  return val === true || val === 1 || val === 'true' ? '✅' : '❎';
 }
 
 // 撤离描述
@@ -87,10 +150,54 @@ function xiabanText(xiaban, part_leave_number, num) {
   return '';
 }
 
-// 汇总格式
-function formatSummary(data, group_id) {
+/**
+ * 解析 bstudio_create_time 的時間並映射到時間段。
+ * @param {string} timeStr - 時間字符串，格式為 "Tue, 12 Aug 2025 09:53:39 GMT"
+ * @returns {string} - 時間段名稱（上午、飯前、飯後、下午）
+ */
+function parseTimeSegment(timeStr, groupId = 'default') {
+  if (!timeStr) return '未知';
+  
+  try {
+    const date = new Date(timeStr);
+    if (isNaN(date.getTime())) return '未知';
+    
+    const hours = date.getUTCHours();
+    const minutes = date.getUTCMinutes();
+    const timeInMinutes = hours * 60 + minutes;
+
+    // 使用群组特定的时间段配置
+    const formatConfig = GROUP_FORMATS[groupId] || GROUP_FORMATS.default;
+    const timeSegments = formatConfig.timeSegments || TIME_SEGMENTS;
+
+    for (const segment of timeSegments) {
+      if (timeInMinutes >= segment.start && timeInMinutes < segment.end) {
+        return segment.name;
+      }
+    }
+    return '未知';
+  } catch (e) {
+    return '未知';
+  }
+}
+
+
+/**
+ * 格式化工作許可證記錄摘要。
+ * @param {Array} data - 許可證記錄數組
+ * @param {string} groupId - 群組 ID
+ * @returns {string} - 格式化摘要字符串
+ */
+function formatSummary(data, groupId = 'default') {
   if (!Array.isArray(data) || data.length === 0) return "今日無工地記錄";
+  
+  // 獲取群組格式配置，默認為 default
+  const formatConfig = GROUP_FORMATS[groupId] || GROUP_FORMATS.default;
+  
+  // 解析日期
   const dateStr = parseDate(data[0].bstudio_create_time || '');
+  
+  // 聚合分判商
   const contrs = [];
   const seen = new Set();
   for (const rec of data) {
@@ -102,39 +209,44 @@ function formatSummary(data, group_id) {
   }
   const mainContr = contrs.join('、');
 
+  // 生成記錄詳情
   const details = data.map((rec, i) => {
-    const loc = rec.location || '';
-    const sub = rec.subcontrator || rec.subcontractor || '';
-    const num = rec.number || '';
-    const floor = rec.floor || '';
-    const m = safeVal(rec.morning);
-    const a = safeVal(rec.afternoon);
-    const xiaban = rec.xiaban;
-    const part_leave = rec.part_leave_number || 0;
-    return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}\n【安全相: 上午 ${m}，下午 ${a}】${xiabanText(xiaban, part_leave, num)}`;
+    const fields = {
+      location: rec.location || '',
+      subcontractor: rec.subcontrator || rec.subcontractor || '',
+      number: rec.number || '',
+      floor: rec.floor || '',
+      // 修改：使用群组特定的时间段配置
+      safetyStatus: formatConfig.timeSegments.map(segment => {
+        const isCurrentSegment = parseTimeSegment(rec.bstudio_create_time, groupId) === segment.name;
+        const fieldValue = rec[segment.field];
+        return `${segment.name} ${isCurrentSegment ? '✅' : '❎'}`;
+      }).join('，'),
+      xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
+    };
+
+    // 根據群組配置動態選擇顯示字段
+    const output = [];
+    if (formatConfig.showFields.includes('location')) {
+      output.push(`${i + 1}. ${fields.location} ${fields.subcontractor} 共 ${fields.number} 人 樓層 ${fields.floor}\n`);
+    }
+    if (formatConfig.showFields.includes('safetyStatus')) {
+      output.push(`【安全相: ${fields.safetyStatus}】`);
+    }
+    if (formatConfig.showFields.includes('xiaban')) {
+      output.push(fields.xiaban);
+    }
+    return output.join('\n');
   });
 
-  // 根据group_id动态设置标题，如果没有传group_id则使用默认标题
-  let title = "----LiftShaft (Permit to Work)------"; // 默认标题
-  if (group_id) {
-    if (group_id === GROUP_ID) {
-      title = "----LiftShaft (Permit to Work)------";
-    } else if (group_id === GROUP_ID_2) {
-      title = "----外墙棚架 (Permit to Work)------";
-    } else if (group_id === GROUP_ID_3) {
-      title = "----LiftShaft (Permit to Work)------";
-    }
-  }
-
+  // 組裝最終輸出
   return (
-    `${title}\n` +
+    `------${formatConfig.title}------\n` +
     `日期: ${dateStr}\n` +
-    `主要分判：${mainContr}\n\n` +
+    `主要分判: ${mainContr}\n\n` +
     `⚠指引\n` +
-    `- 升降機槽工作許可證填妥及齊簽名視為開工\n` +
-    `- ✅❎為安全部有冇影安全相，⭕❌為分判有冇影安全相\n` +
-    `- 收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部\n\n` +
-    `以下爲申請位置\n` +
+    formatConfig.guidelines.map(line => `- ${line}`).join('\n') + '\n\n' +
+    `以下為申請位置\n` +
     details.join('\n')
   );
 }
@@ -174,10 +286,6 @@ function formatOTSummary(data) {
       const sub = rec.subcontrator || rec.subcontractor || '';
       const num = rec.number || '';
       const floor = rec.floor || '';
-      const m = safeVal(rec.morning);
-      const a = safeVal(rec.afternoon);
-      const xiaban = rec.xiaban;
-      const part_leave = rec.part_leave_number || 0;
       return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}\n`;
     });
 
@@ -396,165 +504,6 @@ client.on('message', async msg => {
     appendLog(msg.from, '处理消息时发生异常');
   }
 });
-// client.on('message', async msg => {
-//   try {
-//     const user = msg.from;
-//     let query = '';
-//     let files = [];
-
-//     // 判断是否群聊
-//     const chat = await msg.getChat();
-//     const isGroup = chat.isGroup;
-//     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}`);
-//     if (!isGroup) {
-//       appendLog(user, '不是群聊消息，不回复用户');
-//       return;
-//     }
-//     // 在发送到API前，记录 group_id
-//     const groupId = msg.from; // 这就是 WhatsApp 的群ID
-//     appendLog(groupId, msg.body);
-
-//     // —— 处理不同类型的 WhatsApp 消息 ——
-//     if (msg.type === 'chat') {
-//       query = msg.body.trim();
-//       appendLog(groupId, `文本消息内容: ${query}`);
-//       // 如果用户输入包含「总结」等关键词，直接调用接口并返回结果
-//       if (containsSummaryKeyword(query)) {
-//         try {
-//           const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
-//             params: {
-//               group_id: groupId // 替换为实际的群组ID
-//             }
-//           });
-//           // 假定接口返回的是一个 JSON 数组
-//           const data = resp.data;
-//           const summary = formatSummary(data);
-//           await msg.reply(summary);
-//         } catch (err) {
-//           appendLog(groupId, `调用 records/today 失败：${err.message}`);
-//           await msg.reply('获取今日记录失败，请稍后重试。');
-//         }
-//         return;  // 拦截后不再往下走 Dify 流程
-//       }
-//     } else if (msg.type === 'image') {
-//       // 图片（可能带有文字 caption）
-//       const media = await msg.downloadMedia();
-//       if (media) {
-//         const ext = mime.extension(media.mimetype) || 'jpg';
-//         const filename = `img_${Date.now()}.${ext}`;
-//         const filepath = path.join(TMP_DIR, filename);
-//         await fs.writeFile(filepath, media.data, 'base64');
-//         appendLog(groupId, `图片已保存: ${filepath}`);
-
-//         // 上传到 Dify
-//         const file_id = await uploadFileToDify(filepath, user, 'image');
-//         appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
-//         files.push({
-//           type: 'image',
-//           transfer_method: 'local_file',
-//           upload_file_id: file_id
-//         });
-
-//         // 支持图文混合：读取 caption 或 body
-//         const caption = msg.caption || msg.body || '';
-//         query = caption ? `[图片] ${caption}` : '[图片]';
-//         appendLog(groupId, `图文消息内容: ${query}`);
-
-//         // 删除临时文件
-//         await fs.remove(filepath);
-//         appendLog(groupId, `临时图片文件已删除: ${filepath}`);
-//       }
-//     } else if (['ptt', 'audio'].includes(msg.type)) {
-//       const media = await msg.downloadMedia();
-//       if (media) {
-//         const ext = mime.extension(media.mimetype) || 'ogg';
-//         const filename = `audio_${Date.now()}.${ext}`;
-//         const filepath = path.join(TMP_DIR, filename);
-//         await fs.writeFile(filepath, media.data, 'base64');
-//         appendLog(groupId, `语音已保存: ${filepath}`);
-//         query = await audioToText(filepath, user);
-//         appendLog(groupId, `语音转文字结果: ${query}`);
-//         await fs.remove(filepath);
-//         appendLog(groupId, `临时语音文件已删除: ${filepath}`);
-//       }
-//     } else {
-//       query = '[暂不支持的消息类型]';
-//       appendLog(groupId, `收到暂不支持的消息类型: ${msg.type}`);
-//     }
-
-//     // —— 可选：记录收到的 WhatsApp 消息 ——
-//     if (LOG_WHATSAPP_MSGS) {
-//       const logEntry = `[${new Date().toISOString()}] ${msg.from} (${msg.type}): ${msg.body || ''}\n`;
-//       await fs.appendFile(LOG_FILE, logEntry);
-//       appendLog(groupId, '消息已写入日志文件');
-//     }
-
-//     if (!query) {
-//       if (!isGroup || shouldReply(msg, BOT_NAME)) {
-//         await msg.reply('未识别到有效内容。');
-//         appendLog(groupId, '未识别到有效内容，已回复用户');
-//       }
-//       return;
-//     }
-
-//     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
-//     const needReply = isGroup && shouldReply(msg, BOT_NAME);
-//     appendLog(groupId, `是否需要AI回复: ${needReply}`);
-
-//     // —— 调用 Dify，拿到原始 SSE 日志文本 ——
-//     // 无论是否需要AI回复，都上传Dify，可用于埋点或业务分析
-//     let difyLogString = '';
-//     try {
-//       query = `${query} [group_id:${groupId}]`;
-//       appendLog(groupId, `开始调用Dify，query: ${query}, files: ${JSON.stringify(files)}`);
-//       difyLogString = await sendToDify({ query, user, files });
-//       appendLog(groupId, 'Dify 调用完成');
-//     } catch (e) {
-//       appendLog(groupId, `Dify 调用失败: ${e.message}`);
-//       if (needReply) await msg.reply('调用 Dify 失败，请稍后再试。');
-//       return;
-//     }
-
-//     appendLog(groupId, `Dify 原始返回：${difyLogString}`);
-
-//     // —— 解析并回复 ——
-//     let replyStr;
-//     try {
-//       appendLog(groupId, '开始解析Dify响应');
-//       replyStr = extractAgentAnswer(difyLogString);
-//       if (typeof replyStr !== 'string') {
-//         replyStr = String(replyStr);
-//       }
-//       appendLog(groupId, `Final agent answer: ${replyStr}`);
-//       if (!needReply && !replyStr.includes('缺少')) {
-//         // 群聊未触发关键词，不回复，仅上传
-//         appendLog(groupId, '群聊未触发关键词，不回复，仅上传Dify');
-//         return;
-//       }
-//       try {
-//         appendLog(groupId, `尝试回复用户: ${replyStr}`);
-//         await msg.reply(replyStr);
-//         appendLog(groupId, '已回复用户');
-//       } catch (e) {
-//         appendLog(groupId, `回复用户失败: ${e.message}`);
-//       }
-//     } catch (err) {
-//       appendLog(groupId, `处理 Dify 回复失败：${err.message}`);
-//       replyStr = `处理失败：${err.message}`;
-//       try {
-//         await msg.reply(replyStr);
-//         appendLog(groupId, '已回复用户');
-//       } catch (e) {
-//         appendLog(groupId, `回复用户失败: ${e.message}`);
-//       }
-//     }
-
-//   } catch (err) {
-//     appendLog(msg.from, `处理消息出错: ${err.message}`);
-//     try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
-//     appendLog(msg.from, '处理消息时发生异常');
-//   }
-// });
 
 client.initialize();
 
