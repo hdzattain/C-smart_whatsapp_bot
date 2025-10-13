@@ -111,6 +111,17 @@ function containsSummaryKeyword(text) {
   return keywords.some(k => text.includes(k));
 }
 
+
+// —— 后端返回数据的处理函数 ——  
+// function parseDate(dtStr) {
+//   // 尝试用 Date 解析，否则截取前 10 个字符  
+//   const d = new Date(dtStr);
+//   if (!isNaN(d)) {
+//     return d.toISOString().slice(0, 10);
+//   }
+//   return dtStr.slice(0, 10);
+// }
+
 /**
  * 解析 bstudio_create_time 的日期。
  * @param {string} timeStr - 時間字符串，格式為 "Tue, 12 Aug 2025 09:53:39 GMT"
@@ -211,19 +222,47 @@ function formatSummary(data, groupId = 'default') {
 
   // 生成記錄詳情
   const details = data.map((rec, i) => {
+    let updateHistory = [];
+    try {
+      if (typeof rec.update_history === 'string' && rec.update_history.trim() !== '') {
+        try {
+          updateHistory = JSON.parse(rec.update_history);
+          // 确保解析结果是数组
+          if (!Array.isArray(updateHistory)) {
+            updateHistory = [];
+          }
+        } catch (jsonError) {
+          console.warn(`解析update_history失败: ${jsonError.message}`);
+          updateHistory = [];
+        }
+      } else if (Array.isArray(rec.update_history)) {
+        updateHistory = rec.update_history;
+      }
+    } catch (e) {
+      console.error(`处理update_history时出错: ${e.message}`);
+      updateHistory = [];
+    }
+    
     const fields = {
       location: rec.location || '',
       subcontractor: rec.subcontrator || rec.subcontractor || '',
       number: rec.number || '',
       floor: rec.floor || '',
-      // 修改：使用群组特定的时间段配置
       safetyStatus: formatConfig.timeSegments.map(segment => {
-        const isCurrentSegment = parseTimeSegment(rec.bstudio_create_time, groupId) === segment.name;
-        const fieldValue = rec[segment.field];
-        return `${segment.name} ${isCurrentSegment ? '✅' : '❎'}`;
+        // 检查是否有任何时间戳落在当前时间段内
+        const hasTimeInSegment = updateHistory.some(timestamp => {
+          try {
+            return parseTimeSegment(timestamp, groupId) === segment.name;
+          } catch (e) {
+            return false;
+          }
+        });
+        
+        return `${segment.name} ${hasTimeInSegment ? '✅' : '❎'}`;
       }).join('，'),
       xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
     };
+    console.log('update_history:', updateHistory);
 
     // 根據群組配置動態選擇顯示字段
     const output = [];
@@ -504,6 +543,165 @@ client.on('message', async msg => {
     appendLog(msg.from, '处理消息时发生异常');
   }
 });
+// client.on('message', async msg => {
+//   try {
+//     const user = msg.from;
+//     let query = '';
+//     let files = [];
+
+//     // 判断是否群聊
+//     const chat = await msg.getChat();
+//     const isGroup = chat.isGroup;
+//     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}`);
+//     if (!isGroup) {
+//       appendLog(user, '不是群聊消息，不回复用户');
+//       return;
+//     }
+//     // 在发送到API前，记录 group_id
+//     const groupId = msg.from; // 这就是 WhatsApp 的群ID
+//     appendLog(groupId, msg.body);
+
+//     // —— 处理不同类型的 WhatsApp 消息 ——
+//     if (msg.type === 'chat') {
+//       query = msg.body.trim();
+//       appendLog(groupId, `文本消息内容: ${query}`);
+//       // 如果用户输入包含「总结」等关键词，直接调用接口并返回结果
+//       if (containsSummaryKeyword(query)) {
+//         try {
+//           const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
+//             params: {
+//               group_id: groupId // 替换为实际的群组ID
+//             }
+//           });
+//           // 假定接口返回的是一个 JSON 数组
+//           const data = resp.data;
+//           const summary = formatSummary(data);
+//           await msg.reply(summary);
+//         } catch (err) {
+//           appendLog(groupId, `调用 records/today 失败：${err.message}`);
+//           await msg.reply('获取今日记录失败，请稍后重试。');
+//         }
+//         return;  // 拦截后不再往下走 Dify 流程
+//       }
+//     } else if (msg.type === 'image') {
+//       // 图片（可能带有文字 caption）
+//       const media = await msg.downloadMedia();
+//       if (media) {
+//         const ext = mime.extension(media.mimetype) || 'jpg';
+//         const filename = `img_${Date.now()}.${ext}`;
+//         const filepath = path.join(TMP_DIR, filename);
+//         await fs.writeFile(filepath, media.data, 'base64');
+//         appendLog(groupId, `图片已保存: ${filepath}`);
+
+//         // 上传到 Dify
+//         const file_id = await uploadFileToDify(filepath, user, 'image');
+//         appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
+//         files.push({
+//           type: 'image',
+//           transfer_method: 'local_file',
+//           upload_file_id: file_id
+//         });
+
+//         // 支持图文混合：读取 caption 或 body
+//         const caption = msg.caption || msg.body || '';
+//         query = caption ? `[图片] ${caption}` : '[图片]';
+//         appendLog(groupId, `图文消息内容: ${query}`);
+
+//         // 删除临时文件
+//         await fs.remove(filepath);
+//         appendLog(groupId, `临时图片文件已删除: ${filepath}`);
+//       }
+//     } else if (['ptt', 'audio'].includes(msg.type)) {
+//       const media = await msg.downloadMedia();
+//       if (media) {
+//         const ext = mime.extension(media.mimetype) || 'ogg';
+//         const filename = `audio_${Date.now()}.${ext}`;
+//         const filepath = path.join(TMP_DIR, filename);
+//         await fs.writeFile(filepath, media.data, 'base64');
+//         appendLog(groupId, `语音已保存: ${filepath}`);
+//         query = await audioToText(filepath, user);
+//         appendLog(groupId, `语音转文字结果: ${query}`);
+//         await fs.remove(filepath);
+//         appendLog(groupId, `临时语音文件已删除: ${filepath}`);
+//       }
+//     } else {
+//       query = '[暂不支持的消息类型]';
+//       appendLog(groupId, `收到暂不支持的消息类型: ${msg.type}`);
+//     }
+
+//     // —— 可选：记录收到的 WhatsApp 消息 ——
+//     if (LOG_WHATSAPP_MSGS) {
+//       const logEntry = `[${new Date().toISOString()}] ${msg.from} (${msg.type}): ${msg.body || ''}\n`;
+//       await fs.appendFile(LOG_FILE, logEntry);
+//       appendLog(groupId, '消息已写入日志文件');
+//     }
+
+//     if (!query) {
+//       if (!isGroup || shouldReply(msg, BOT_NAME)) {
+//         await msg.reply('未识别到有效内容。');
+//         appendLog(groupId, '未识别到有效内容，已回复用户');
+//       }
+//       return;
+//     }
+
+//     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
+//     const needReply = isGroup && shouldReply(msg, BOT_NAME);
+//     appendLog(groupId, `是否需要AI回复: ${needReply}`);
+
+//     // —— 调用 Dify，拿到原始 SSE 日志文本 ——
+//     // 无论是否需要AI回复，都上传Dify，可用于埋点或业务分析
+//     let difyLogString = '';
+//     try {
+//       query = `${query} [group_id:${groupId}]`;
+//       appendLog(groupId, `开始调用Dify，query: ${query}, files: ${JSON.stringify(files)}`);
+//       difyLogString = await sendToDify({ query, user, files });
+//       appendLog(groupId, 'Dify 调用完成');
+//     } catch (e) {
+//       appendLog(groupId, `Dify 调用失败: ${e.message}`);
+//       if (needReply) await msg.reply('调用 Dify 失败，请稍后再试。');
+//       return;
+//     }
+
+//     appendLog(groupId, `Dify 原始返回：${difyLogString}`);
+
+//     // —— 解析并回复 ——
+//     let replyStr;
+//     try {
+//       appendLog(groupId, '开始解析Dify响应');
+//       replyStr = extractAgentAnswer(difyLogString);
+//       if (typeof replyStr !== 'string') {
+//         replyStr = String(replyStr);
+//       }
+//       appendLog(groupId, `Final agent answer: ${replyStr}`);
+//       if (!needReply && !replyStr.includes('缺少')) {
+//         // 群聊未触发关键词，不回复，仅上传
+//         appendLog(groupId, '群聊未触发关键词，不回复，仅上传Dify');
+//         return;
+//       }
+//       try {
+//         appendLog(groupId, `尝试回复用户: ${replyStr}`);
+//         await msg.reply(replyStr);
+//         appendLog(groupId, '已回复用户');
+//       } catch (e) {
+//         appendLog(groupId, `回复用户失败: ${e.message}`);
+//       }
+//     } catch (err) {
+//       appendLog(groupId, `处理 Dify 回复失败：${err.message}`);
+//       replyStr = `处理失败：${err.message}`;
+//       try {
+//         await msg.reply(replyStr);
+//         appendLog(groupId, '已回复用户');
+//       } catch (e) {
+//         appendLog(groupId, `回复用户失败: ${e.message}`);
+//       }
+//     }
+
+//   } catch (err) {
+//     appendLog(msg.from, `处理消息出错: ${err.message}`);
+//     try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
+//     appendLog(msg.from, '处理消息时发生异常');
+//   }
+// });
 
 client.initialize();
 
@@ -696,3 +894,4 @@ cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
+
