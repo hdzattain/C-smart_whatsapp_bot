@@ -74,7 +74,24 @@ def create_record():
     return jsonify(res), 201
 
 from datetime import datetime
+import pytz
 import uuid
+from dateutil.parser import parse as date_parser
+
+def generate_gmt_cst_time():
+    """生成当前北京时间，格式为 Fri, 10 Oct 2025 11:03:13 GMT"""
+    cst_tz = pytz.timezone("Asia/Shanghai")
+    cst_time = datetime.now(cst_tz)
+    return cst_time.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+def normalize_date(value):
+    """解析 GMT 格式时间并返回 YYYY-MM-DD"""
+    try:
+        dt = datetime.strptime(value, "%a, %d %b %Y %H:%M:%S GMT")
+        dt = pytz.UTC.localize(dt)
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return None
 
 def clean_string(value):
     """移除字符串中的所有空格（包括中间空格）"""
@@ -264,6 +281,10 @@ def update_by_condition():
 
     print("Received filters:", filters)
     print("Received updates:", updates)
+    # 自动添加当前北京时间的 bstudio_create_time 到 updates
+    current_time = generate_gmt_cst_time()
+    
+    print("after time added updates:", updates)
     print("FIELDS:", FIELDS)
 
     string_fields = {"location", "subcontractor", "floor", "group_id"}
@@ -297,6 +318,11 @@ def update_by_condition():
             update_params.append(value)
         else:
             print(f"Warning: Update field {key} not in FIELDS")
+    
+    # 添加update_history字段的更新
+    update_clause.append(f"`update_history` = JSON_ARRAY_APPEND(IFNULL(`update_history`, '[]'), '$', %s)")
+    update_params.append(current_time)
+
 
     if not update_clause:
         return jsonify({"error": "无可更新字段"}), 400
