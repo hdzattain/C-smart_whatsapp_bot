@@ -511,71 +511,79 @@ function ensureGroupConfig(groupId) {
   }
 }
 
-// — 发送消息到 FastGPT，返回 content 字段 —
-async function sendToFastGPT({ query, user, group_id}) {
-  const gConfig = groupConfig.groups[group_id] || groupConfig.default;
-  if (!gConfig) {
-    throw new Error('未找到群組或默認配置');
-  }
-
+// ========== 公共 POST + 重试函数 ==========
+async function _postToFastGPT(data, gConfig, user) {
   const apiKey = gConfig.fastGPT?.apiKey || '';
   const url = gConfig.fastGPT?.url || '';
 
-  if (!apiKey) {
-    throw new Error(`未找到 FastGPT API key`);
-  }
-  const chatId = group_id; // 生成随机 chatId
-  const data = {
-    chatId: chatId,
-    stream: false,
-    detail: false,
-    messages: [
-      {
-        content: query,
-        role: 'user'
-      }
-    ]
-  };
+  if (!apiKey) throw new Error(`未找到 FastGPT API key`);
 
   let lastErr;
-  for (let i = 0; i < 3; i++) {  // 最多重试3次
+  for (let i = 0; i < 3; i++) {
     try {
-      const res = await axios.post(
-        url,
-        data,
-        {
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 100000 // 25秒超时，防止僵死
-        }
-      );
-      // 提取 choices[0].message.content
+      const res = await axios.post(url, data, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 100000 // 100s 超时
+      });
       console.log(`[LOG] FastGPT 返回数据: ${JSON.stringify(res.data)}`);
       const content = res.data.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error('FastGPT 返回数据中缺少 content 字段');
-      }
+      if (!content) throw new Error('FastGPT 返回数据中缺少 content 字段');
       return content;
     } catch (err) {
       lastErr = err;
-      // 只对“断流”类重试
       const msg = (err.message || '') + (err.code ? ' ' + err.code : '');
       if (
         (msg.includes('aborted') || msg.includes('stream') || msg.includes('ECONNRESET') || msg.includes('ERR_BAD_RESPONSE')) &&
-        i < 2 // 只重试前两次
+        i < 2
       ) {
         console.log(`FastGPT 请求断流，正在第${i+1}次重试...`);
-        appendLog(user, `FastGPT 请求断流，正在第${i+1}次重试...`);
+        appendLog(user, `FastGPT 请求断流，正在第${i+1}次重试...`); // 假设 appendLog 已定义
         await new Promise(res => setTimeout(res, 1200 * (i + 1)));
         continue;
       }
       throw err;
     }
   }
-  // 彻底失败
   throw lastErr;
+}
+
+// ========== Messages 构建 Helper（支持文本 + 多图） ==========
+function buildMessages(contentParts, chatId) {
+  const content = contentParts.map(part => {
+    if (part.type === 'text') return { type: 'text', text: part.text };
+    if (part.type === 'image_url') return { type: 'image_url', image_url: { url: part.url } };
+    throw new Error(`不支持的 type: ${part.type}`);
+  });
+  return {
+    chatId,
+    stream: false,
+    detail: false,
+    messages: [{ role: 'user', content }]
+  };
+}
+
+// ========== 原函数：纯文本 ==========
+async function sendToFastGPT({ query, user, group_id }) {
+  const gConfig = groupConfig.groups[group_id] || groupConfig.default;
+  if (!gConfig) throw new Error('未找到群組或默認配置');
+
+  const contentParts = [{ type: 'text', text: query }];
+  const data = buildMessages(contentParts, group_id);
+  return _postToFastGPT(data, gConfig, user);
+}
+
+// ========== 新函数：图文（query + images[]） ==========
+async function sendToFastGPTWithMedia({ query, images = [], user, group_id }) {
+  const gConfig = groupConfig.groups[group_id] || groupConfig.default;
+  if (!gConfig) throw new Error('未找到群組或默認配置');
+
+  const contentParts = [{ type: 'text', text: query }];
+  images.forEach(url => contentParts.push({ type: 'image_url', url }));
+  const data = buildMessages(contentParts, group_id);
+  return _postToFastGPT(data, gConfig, user);
 }
 
 async function sendToDify({ query, user, files, groupId }) {
@@ -1362,6 +1370,7 @@ async function handleEmailBot(msg, groupId) {
 
 async function handlePlanBot(msg, groupId, isGroup) {
   try {
+    const images = [];
     query = (msg.body || '').trim();
     console.log(`[LOG] 原始消息内容: ${query}`);
     query = await parseMessageMentionsNumber(msg, query);
@@ -1373,6 +1382,17 @@ async function handlePlanBot(msg, groupId, isGroup) {
         appendLog(groupId, '未识别到有效内容，已回复用户');
       }
       return;
+    }
+    // 处理图片
+    if (msg.type === 'image') {
+      const media = await msg.downloadMedia();
+      if (media) {
+        const imageUrl = await uploadToFeishu({
+          buffer: Buffer.from(media.data, 'base64'),
+          filename: `image-${Date.now()}.jpg`
+        });
+        images.push(imageUrl);
+      }
     }
 
     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
@@ -1386,7 +1406,16 @@ async function handlePlanBot(msg, groupId, isGroup) {
       query = `${query} [group_id:${groupId}]`;
       console.log(`开始调用FastGPT，query: ${query}`);
       appendLog(groupId, `开始调用FastGPT，query: ${query}`);
-      replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId});
+      if (images.length > 0) {
+        replyStr = await sendToFastGPTWithMedia({
+          query,
+          images,
+          user: msg.from,
+          group_id: msg.from
+        });
+      } else {
+        replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId});
+      }
       console.log(`FastGPT response content: ${replyStr}`);
       appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
     } catch (e) {
