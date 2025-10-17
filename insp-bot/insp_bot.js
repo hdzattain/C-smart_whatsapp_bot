@@ -23,6 +23,7 @@ const fsPromises = fs.promises;
 const rimraf = require('rimraf').sync;
 const qrcode = require('qrcode-terminal');
 const fetch = require('node-fetch');
+const { v4: uuidv4 } = require('uuid');
 
 // === 常量 & 配置加载 ===
 const LOG_DIR = path.join(__dirname, 'logs');
@@ -46,6 +47,9 @@ const LOG_FILE = path.join(__dirname, 'whatsapp_logs.txt');
 const BITABLE_API_URL = 'https://c-smart-gatwey.csmart-test.com/llm-system/open/api/biTableRecordAdd';
 const WIKI_TOKEN = 'U4i4wXTLSi0fyfkeMbScNAAJnLf';
 const WIKI_TABLE_ID = 'tblyXhKKu9y3AALG';
+const PLAN_FASTGPT_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
+const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
+const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
 
 // 确保 TMP_DIR 存在
 ensureDir(TMP_DIR);
@@ -507,6 +511,73 @@ function ensureGroupConfig(groupId) {
   }
 }
 
+// — 发送消息到 FastGPT，返回 content 字段 —
+async function sendToFastGPT({ query, user, group_id}) {
+  const gConfig = groupConfig.groups[group_id] || groupConfig.default;
+  if (!gConfig) {
+    throw new Error('未找到群組或默認配置');
+  }
+
+  const apiKey = gConfig.fastGPT?.apiKey || '';
+  const url = gConfig.fastGPT?.url || '';
+
+  if (!apiKey) {
+    throw new Error(`未找到 FastGPT API key`);
+  }
+  const chatId = group_id; // 生成随机 chatId
+  const data = {
+    chatId: chatId,
+    stream: false,
+    detail: false,
+    messages: [
+      {
+        content: query,
+        role: 'user'
+      }
+    ]
+  };
+
+  let lastErr;
+  for (let i = 0; i < 3; i++) {  // 最多重试3次
+    try {
+      const res = await axios.post(
+        url,
+        data,
+        {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 100000 // 25秒超时，防止僵死
+        }
+      );
+      // 提取 choices[0].message.content
+      console.log(`[LOG] FastGPT 返回数据: ${JSON.stringify(res.data)}`);
+      const content = res.data.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('FastGPT 返回数据中缺少 content 字段');
+      }
+      return content;
+    } catch (err) {
+      lastErr = err;
+      // 只对“断流”类重试
+      const msg = (err.message || '') + (err.code ? ' ' + err.code : '');
+      if (
+        (msg.includes('aborted') || msg.includes('stream') || msg.includes('ECONNRESET') || msg.includes('ERR_BAD_RESPONSE')) &&
+        i < 2 // 只重试前两次
+      ) {
+        console.log(`FastGPT 请求断流，正在第${i+1}次重试...`);
+        appendLog(user, `FastGPT 请求断流，正在第${i+1}次重试...`);
+        await new Promise(res => setTimeout(res, 1200 * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  // 彻底失败
+  throw lastErr;
+}
+
 async function sendToDify({ query, user, files, groupId }) {
   const gConfig = groupConfig.groups[groupId] || groupConfig.default;
   if (!gConfig) {
@@ -867,7 +938,6 @@ function formatSummary(data) {
     details.join('\n')
   );
 }
-
 
 async function replyMessage(msg, text, needReply) {
   if (!needReply) return;
@@ -1289,6 +1359,69 @@ async function handleEmailBot(msg, groupId) {
   await msg.reply('EmailBot 功能开发中...');
 }
 
+
+async function handlePlanBot(msg, groupId, isGroup) {
+  try {
+    query = (msg.body || '').trim();
+    console.log(`[LOG] 原始消息内容: ${query}`);
+    query = await parseMessageMentionsNumber(msg, query);
+    console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
+    if (!query) {
+      if (!isGroup || shouldReply(msg, BOT_NAME)) {
+        await msg.reply('未识别到有效内容。');
+        console.log('未识别到有效内容，已回复用户');
+        appendLog(groupId, '未识别到有效内容，已回复用户');
+      }
+      return;
+    }
+
+    // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
+    const needReply = isGroup && shouldReply(msg, BOT_NAME);
+    console.log(`是否需要AI回复: ${needReply}`);
+    appendLog(groupId, `是否需要AI回复: ${needReply}`);
+
+    // —— 调用 FastGPT，拿到返回的 JSON 数据 ——
+    let replyStr;
+    try {
+      query = `${query} [group_id:${groupId}]`;
+      console.log(`开始调用FastGPT，query: ${query}`);
+      appendLog(groupId, `开始调用FastGPT，query: ${query}`);
+      replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId});
+      console.log(`FastGPT response content: ${replyStr}`);
+      appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    } catch (e) {
+      console.log(`FastGPT 调用失败: ${e.message}`);
+      appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+      if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+      return;
+    }
+
+    // —— 回复用户 ——
+    if (needReply || replyStr.includes('缺少')) {
+      try {
+        console.log(`尝试回复用户: ${replyStr}`);
+        appendLog(groupId, `尝试回复用户: ${replyStr}`);
+        await msg.reply(replyStr);
+        console.log('已回复用户');
+        appendLog(groupId, '已回复用户');
+      } catch (e) {
+        console.log(`回复用户失败: ${e.message}`);
+        appendLog(groupId, `回复用户失败: ${e.message}`);
+      }
+    } else {
+      console.log('群聊未触发关键词，不回复，仅上传FastGPT');
+      appendLog(groupId, '群聊未触发关键词，不回复，仅上传FastGPT');
+    }
+
+  } catch (err) {
+    console.log(`处理消息出错: ${err.message}`);
+    appendLog(msg.from, `处理消息出错: ${err.message}`);
+    try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch { }
+    console.log('处理消息时发生异常');
+    appendLog(msg.from, '处理消息时发生异常');
+  }
+}
+
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -1502,6 +1635,12 @@ client.on('message', async msg => {
         break;
       case 'email-bot':
         await handleEmailBot(msg, groupId);
+        break;
+      case 'ced-bot':
+        await handlePlanBot(msg, groupId, isGroup);
+        break;
+      case 'plan-bot':
+        await handlePlanBot(msg, groupId, isGroup);
         break;
       default:
         await msg.reply('未知 Bot 类型');
