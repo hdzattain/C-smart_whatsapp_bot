@@ -1383,16 +1383,22 @@ async function handlePlanBot(msg, groupId, isGroup) {
       }
       return;
     }
-    // 处理图片
+    // 处理图片消息
     if (msg.type === 'image') {
       const media = await msg.downloadMedia();
-      if (media) {
-        const imageUrl = await uploadToFeishu({
-          buffer: Buffer.from(media.data, 'base64'),
-          filename: `image-${Date.now()}.jpg`
-        });
-        images.push(imageUrl);
-      }
+      if (!media) throw new Error('无法下载图片');
+
+      // 保存临时文件（飞书接口需要 filepath）
+      const tempFilePath = `./temp-image-${Date.now()}.jpg`;
+      fs.writeFileSync(tempFilePath, Buffer.from(media.data, 'base64'));
+
+      // 上传到飞书
+      const imageUrl = await uploadImageToFeishu(tempFilePath);
+      console.log(`[LOG] 图片已上传到飞书，URL: ${imageUrl}`);
+      images.push(imageUrl);
+
+      // 删除临时文件
+      fs.unlinkSync(tempFilePath);
     }
 
     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
