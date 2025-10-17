@@ -10,6 +10,15 @@ from typing import Optional
 
 app = Flask(__name__)
 
+# --- 外墙棚架群组定义 ---
+EXTERNAL_SCAFFOLDING_GROUPS = ['120363400601106571@g.us']
+
+EXTERNAL_SCAFFOLDING_PROCESSES = [
+    "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線", 
+    "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水"]
+
+EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆", "打膠桶", "平水"]
+
 DB_CONFIG = {
     "host": "10.25.0.42",
     "port": 3306,
@@ -24,7 +33,8 @@ TABLE_NAME = "e_permit3"
 FIELDS = [
     "id", "group_id", "project", "uuid", "bstudio_create_time",
     "location", "number", "floor", "morning",
-    "afternoon", "xiaban", "subcontractor", "part_leave_number"
+    "afternoon", "xiaban", "subcontractor", "part_leave_number",
+    "process", "time_range", "building"
 ]
 # --- DB Utility ---
 def get_conn():
@@ -108,17 +118,39 @@ def insert_one_record(data):
     - group_id、part_leave_number 字段必须支持
     """
     # 校验必填字段
+    is_scaffold_group = data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
     required = ["location", "subcontractor", "number", "floor"]
-    
+    if is_scaffold_group:
+        required.extend(["process", "time_range"])
+
     name_dict = {
         "location": "位置",
         "subcontractor": "分判",
         "number": "人數",
-        "floor": "樓層"
+        "floor": "樓層",
+        "process": "工序",
+        "time_range": "時間"
     }
-    missing = [name_dict[k] for k in required if not data.get(k)]
-    if missing:
-        return {"error": f"缺少字段: {', '.join(missing)}，請重新按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F"}
+    missing_keys = [k for k in required if not data.get(k)]
+    if missing_keys:
+        missing_names = [name_dict[k] for k in missing_keys]
+        if is_scaffold_group:
+            return {"error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請A03-BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
+        else:
+            return {"error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
+
+    # 校验工序
+    if error := validate_process(data):
+        return error
+
+    # 校验 time_range 格式  
+    if error := validate_time_range(data):
+        return error
+
+    # 楼栋提取
+    building = extract_building(data.get("location", ""))
+    data["building"] = building
+
 
     number = int(data["number"])
     new_part = int(data.get("part_leave_number", 0) or 0)
@@ -204,6 +236,38 @@ def insert_one_record(data):
             return {"error": "插入失败", "detail": str(e)}
         return {"status": "ok", "inserted_id": record["id"]}
 
+# --- 外墙棚架 校验字段 ---
+def validate_process(data):
+    """校验工序字段"""
+    process_input = data.get("process", "")
+    processes = list(filter(None, re.split(r'[,，\s]+', process_input)))
+    
+    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
+        return {"error": f"工序無效，應為 {', '.join(EXTERNAL_SCAFFOLDING_VALID_PROCESSES)} 的組合"}
+
+def validate_time_range(data):
+    """校验时间范围格式"""
+    time_range = data.get("time_range", "")
+    
+    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and not re.match(r"^\d{4}-\d{4}$", time_range):
+        return {"error": "時間格式錯誤，應為 0900-1730"}
+
+# --- 外墙棚架 楼栋提取 ---
+def extract_building(location):
+    """改进的楼栋提取函数"""
+    location = clean_string(location)
+    building = "未知"
+    
+    # 匹配格式：字母数字(允许最多3位)-BLK字母 或 字母数字
+    building_regex = r'^([A-Z])\d{1,3}(?:-BLK\s*([A-Z]))?'
+    match = re.match(building_regex, location, re.IGNORECASE)
+    if match:
+        # 优先使用BLK后面的字母，如果没有则使用前面的字母
+        building_letter = (match.group(2) or match.group(1)).upper()
+        building = f"{building_letter}座"
+    
+    return building
+
 
 @app.route("/records/<int:record_id>", methods=["GET"])
 def get_record(record_id):
@@ -264,6 +328,8 @@ def get_today_records():
     # 支持额外group_id等筛选
     for k, v in filters.items():
         if k in FIELDS:
+            if k == "group_id" and (not v or v.strip() == ""):
+                continue
             conditions.append(f"`{k}`=%s")
             params.append(v)
     where = f"WHERE {' AND '.join(conditions)}"
@@ -288,6 +354,9 @@ def update_by_condition():
     print("FIELDS:", FIELDS)
 
     string_fields = {"location", "subcontractor", "floor", "group_id"}
+    if filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS:
+        string_fields.update({"process", "time_range", "building"})
+
     conditions = []
     params = []
     for key, value in filters.items():
@@ -320,8 +389,14 @@ def update_by_condition():
             print(f"Warning: Update field {key} not in FIELDS")
     
     # 添加update_history字段的更新
-    update_clause.append(f"`update_history` = JSON_ARRAY_APPEND(IFNULL(`update_history`, '[]'), '$', %s)")
-    update_params.append(current_time)
+    safety_flag = updates.get("safety_flag")
+    if safety_flag == 1:
+        # 添加update_history字段的更新
+        update_clause.append(f"`update_history` = JSON_ARRAY_APPEND(IFNULL(`update_history`, '[]'), '$', %s)")
+        update_params.append(current_time)
+        print("safety_flag为1，将更新update_history字段")
+    else:
+        print(f"safety_flag为{safety_flag}，跳过update_history字段更新")
 
 
     if not update_clause:
