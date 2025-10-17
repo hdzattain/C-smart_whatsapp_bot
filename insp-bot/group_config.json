@@ -11,6 +11,10 @@
           "id": "6c9eec51-e5f0-4c42-9956-350daca42471",
           "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg"
         }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "openapi-qR6SCptK2Yu8KcYInesHGo7h0Sv2VLKEY5kpPAl9xTrE728rwVDWn7xuI"
       }
     },
     "120363403358685987@g.us": {
@@ -24,6 +28,10 @@
           "id": "318935a7-59f9-4761-bcca-60e707b83236",
           "apiKey": "app-gRWS6vn8Mzq0PCBA0KTFZ4l3"
         }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "fgpt-0987654321fedcba"
       }
     },
     "120363404700610525@g.us": {
@@ -37,6 +45,10 @@
           "id": "",
           "apiKey": ""
         }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "fgpt-abcdef1234567890"
       }
     },
     "120363392011055168@g.us": {
@@ -52,6 +64,67 @@
           "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
           "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
         }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "fgpt-4567890abcdef123"
+      }
+    },
+    "120363420669418133@g.us": {
+      "botType": "plan-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-s2bwyQ0UQ9DJ5pUZXuUeDPyS",
+          "appId": "2cf7a289-1c7d-41fe-a892-fe8b2e4f8c64"
+        },
+        "workflow": {
+          "workflowId": "6c9eec51-e5f0-4c42-9956-350daca42471",
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
+        }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "openapi-s4H5xIBOhXHXb9yqCBzjIbrAwslc23A5oZoZ9N1jg5hHKWNNQ36moPbcmFpUnqCk"
+      }
+    },
+    "120363364433396858@g.us": {
+      "botType": "insp-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "2cf7a289-1c7d-41fe-a892-fe8b2e4f8c64"
+        },
+        "workflow": {
+          "workflowId": "6c9eec51-e5f0-4c42-9956-350daca42471",
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
+        }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "fgpt-1234567890fedcba"
+      }
+    },
+    "120363421952926955@g.us": {
+      "botType": "insp-bot",
+      "dify": {
+        "mode": "workflow",
+        "agent": {
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "2cf7a289-1c7d-41fe-a892-fe8b2e4f8c64"
+        },
+        "workflow": {
+          "workflowId": "6c9eec51-e5f0-4c42-9956-350daca42471",
+          "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
+          "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
+        }
+      },
+      "fastGPT": {
+        "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+        "apiKey": "fgpt-abcdef7890123456"
       }
     }
   },
@@ -68,6 +141,10 @@
         "apiKey": "app-rq3awuokzQJKGiXwaIMMR4wg",
         "appId": "1bf6a168-9b6c-40fd-b319-fe7b1e3d9e53"
       }
+    },
+    "fastGPT": {
+      "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
+      "apiKey": "fgpt-default1234567890"
     }
   }
 }
