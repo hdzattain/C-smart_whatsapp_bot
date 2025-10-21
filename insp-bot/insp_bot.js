@@ -535,6 +535,7 @@ async function _postToFastGPT(data, gConfig, user) {
     } catch (err) {
       lastErr = err;
       const msg = (err.message || '') + (err.code ? ' ' + err.code : '');
+      console.log('[ERR] FastGPT 请求失败:', msg);
       if (
         (msg.includes('aborted') || msg.includes('stream') || msg.includes('ECONNRESET') || msg.includes('ERR_BAD_RESPONSE')) &&
         i < 2
@@ -1009,7 +1010,8 @@ async function handleInspBot(msg, groupId, needReply) {
   if (media) {
     const ext = mime.extension(media.mimetype) || 'jpg';
     const filename = `img_${Date.now()}.${ext}`;
-    const filepath = path.join(TMP_DIR, filename);
+    const groupImgPath = path.join(TMP_DIR, groupId);
+    const filepath = path.join(groupImgPath, filename);
     await fsPromises.writeFile(filepath, Buffer.from(media.data, 'base64'));
     console.log(`[LOG] 图片已保存: ${filepath}`);
 
@@ -1373,23 +1375,39 @@ async function handlePlanBot(msg, groupId, isGroup) {
     const images = [];
     query = (msg.body || '').trim();
     console.log(`[LOG] 原始消息内容: ${query}`);
+    const SenderContact = await msg.getContact();
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+    if (sender) {
+      query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
+    }
     query = await parseMessageMentionsNumber(msg, query);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
+    const isImage = msg.type === 'image' || msg.type === 'album';
     if (!query) {
       if (!isGroup || shouldReply(msg, BOT_NAME)) {
         await msg.reply('未识别到有效内容。');
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
       }
-      return;
+      if (!isImage) {
+        console.log('当前的消息类型是 直接返回', msg.type);
+        return;
+      }
     }
     // 处理图片消息
-    if (msg.type === 'image') {
+    console.log('收到消息类型是msg.type', msg.type);
+    if (isImage) {
+      console.log('当前的消息类型是msg.type', msg.type);
       const media = await msg.downloadMedia();
       if (!media) throw new Error('无法下载图片');
-
+      console.log('下载的图片数据长度:', media.data.length);
       // 保存临时文件（飞书接口需要 filepath）
-      const tempFilePath = `./temp-image-${Date.now()}.jpg`;
+      
+      const groupImgPath = path.join(TMP_DIR, groupId);
+      if (!fs.existsSync(groupImgPath)) {
+        fs.mkdirSync(groupImgPath, { recursive: true });
+      }
+      const tempFilePath = path.join(groupImgPath, `temp-image-${Date.now()}.jpg`);
       fs.writeFileSync(tempFilePath, Buffer.from(media.data, 'base64'));
 
       // 上传到飞书
@@ -1398,9 +1416,8 @@ async function handlePlanBot(msg, groupId, isGroup) {
       images.push(imageUrl);
 
       // 删除临时文件
-      fs.unlinkSync(tempFilePath);
+      // fs.unlinkSync(tempFilePath);
     }
-
     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
     const needReply = isGroup && shouldReply(msg, BOT_NAME);
     console.log(`是否需要AI回复: ${needReply}`);
@@ -1451,7 +1468,7 @@ async function handlePlanBot(msg, groupId, isGroup) {
   } catch (err) {
     console.log(`处理消息出错: ${err.message}`);
     appendLog(msg.from, `处理消息出错: ${err.message}`);
-    try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch { }
+    // try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch { }
     console.log('处理消息时发生异常');
     appendLog(msg.from, '处理消息时发生异常');
   }
@@ -1604,6 +1621,9 @@ client.on('message', async msg => {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
+    const SenderContact = await msg.getContact();
+    // [DEBUG 发送人的number, name, pushname分别是
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
     if (!isGroup) {
       console.log('[LOG] 不是群聊消息，不回复用户');
       return;
@@ -1683,7 +1703,7 @@ client.on('message', async msg => {
 
   } catch (err) {
     console.error('处理消息出错:', err);
-    try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
+    // try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
     console.log('[LOG] 处理消息时发生异常');
   }
 });
@@ -1784,3 +1804,4 @@ function shouldReply(msg, botName) {
 async function audioToText(filepath, user) {
   return '语音转文字结果（占位）';
 }
+
