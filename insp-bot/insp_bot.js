@@ -1377,9 +1377,9 @@ async function handlePlanBot(msg, groupId, isGroup) {
     console.log(`[LOG] 原始消息内容: ${query}`);
     const SenderContact = await msg.getContact();
     console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
-    if (sender) {
-      query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
-    }
+
+    query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
+
     query = await parseMessageMentionsNumber(msg, query);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
     const isImage = msg.type === 'image' || msg.type === 'album';
@@ -1804,4 +1804,5 @@ function shouldReply(msg, botName) {
 async function audioToText(filepath, user) {
   return '语音转文字结果（占位）';
 }
+
 
