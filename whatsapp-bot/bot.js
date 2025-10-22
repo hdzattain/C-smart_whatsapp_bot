@@ -310,7 +310,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
       return acc;
     }, {});
 
-    details = Object.keys(byBuilding).sort().map(building => {
+    const details = Object.keys(byBuilding).sort().map(building => {
       const records = byBuilding[building];
       const buildingDetails = records.map(rec => {
         let updateHistory = [];
@@ -337,7 +337,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
             const hasTimeInSegment = updateHistory.some(timestamp => parseTimeSegment(timestamp, groupId) === segment.name);
             
             const now = new Date();
-            const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+            const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
             
             return hasTimeInSegment
             ? `${segment.name}⭕`
@@ -347,11 +347,13 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
         };
 
         const recordLine = `${fields.location}，${fields.floor}，${fields.subcontractor}，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
-        const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban ? '--->' + fields.xiaban : ''}`;
+        const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
         return `${recordLine}\n${safetyLine}`;
       });
       return `${building}\n${buildingDetails.join('\n')}`;
-    }).join('\n');
+    });
+
+    return details;
 }
 
 function ensureDir(dir) {

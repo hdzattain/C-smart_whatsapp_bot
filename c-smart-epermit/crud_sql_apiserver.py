@@ -353,9 +353,10 @@ def update_by_condition():
     print("after time added updates:", updates)
     print("FIELDS:", FIELDS)
 
-    string_fields = {"location", "subcontractor", "floor", "group_id"}
+    # location, building, floor 不区分大小写，不记入string_fields中
+    string_fields = {"subcontractor", "group_id"}
     if filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS:
-        string_fields.update({"process", "time_range", "building"})
+        string_fields.update({"process", "time_range"})
 
     conditions = []
     params = []
