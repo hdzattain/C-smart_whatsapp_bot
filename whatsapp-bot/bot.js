@@ -458,7 +458,7 @@ client.on('message', async msg => {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
-    if (!isGroup) {
+    if (!isGroup || msg.body.includes('Permit')) {
       console.log('不是群聊消息，不回复用户');
       appendLog(user, '不是群聊消息，不回复用户');
       return;
@@ -960,4 +960,5 @@ cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
+
 
