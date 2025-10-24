@@ -40,7 +40,8 @@ const GROUP_FORMATS = {
     timeSegments: [
       { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
       { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ]
+    ],
+    detailGenerator: generateSummaryDetails
   },
   [GROUP_ID_2]: {
     title: 'External Scaffolding Work(Permit to work)',
@@ -49,13 +50,14 @@ const GROUP_FORMATS = {
       '✅❎為中建影安全相，⭕❌為分判影安全相',
       '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
     ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'rangeTime', ''],
     timeSegments: [
       { name: '上午', start: 360, end: 660, field: 'morning' }, // 06:00-11:00
       { name: '飯前', start: 660, end: 720, field: 'morning' }, // 11:00-12:00
       { name: '飯後', start: 720, end: 840, field: 'afternoon' }, // 12:00-14:00
       { name: '下午', start: 840, end: 1320, field: 'afternoon' } // 14:00-22:00
-    ]
+    ],
+    detailGenerator: generateExternalSummaryDetails
   },
   // 未來群組可在此添加自定義格式
   default: {
@@ -69,7 +71,8 @@ const GROUP_FORMATS = {
     timeSegments: [
       { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
       { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ]
+    ],
+    detailGenerator: generateSummaryDetails
   }
 };
 
@@ -221,6 +224,22 @@ function formatSummary(data, groupId = 'default') {
   const mainContr = contrs.join('、');
 
   // 生成記錄詳情
+  const details = formatConfig.detailGenerator(data, formatConfig, groupId);
+
+  // 組裝最終輸出
+  return (
+    `------${formatConfig.title}------\n` +
+    `日期: ${dateStr}\n` +
+    `主要分判: ${mainContr}\n\n` +
+    `⚠指引\n` +
+    formatConfig.guidelines.map(line => `- ${line}`).join('\n') + '\n\n' +
+    `以下為申請位置\n` +
+    details.join('\n')
+  );
+}
+
+// 生成Summary详情方法（普通群组）
+function generateSummaryDetails(data, formatConfig, groupId) {
   const details = data.map((rec, i) => {
     let updateHistory = [];
     try {
@@ -278,16 +297,63 @@ function formatSummary(data, groupId = 'default') {
     return output.join('\n');
   });
 
-  // 組裝最終輸出
-  return (
-    `------${formatConfig.title}------\n` +
-    `日期: ${dateStr}\n` +
-    `主要分判: ${mainContr}\n\n` +
-    `⚠指引\n` +
-    formatConfig.guidelines.map(line => `- ${line}`).join('\n') + '\n\n' +
-    `以下為申請位置\n` +
-    details.join('\n')
-  );
+  return details;
+}
+
+// 生成Summary详情方法（外墙群组）
+function generateExternalSummaryDetails(data, formatConfig, groupId) {
+    // 外墙群组：按 building 分组
+    const byBuilding = data.reduce((acc, rec) => {
+      const building = rec.building || '未知';
+      if (!acc[building]) acc[building] = [];
+      acc[building].push(rec);
+      return acc;
+    }, {});
+
+    const details = Object.keys(byBuilding).sort().map(building => {
+      const records = byBuilding[building];
+      const buildingDetails = records.map(rec => {
+        let updateHistory = [];
+        try {
+          if (typeof rec.update_history === 'string' && rec.update_history.trim()) {
+            updateHistory = JSON.parse(rec.update_history);
+            if (!Array.isArray(updateHistory)) updateHistory = [];
+          } else if (Array.isArray(rec.update_history)) {
+            updateHistory = rec.update_history;
+          }
+        } catch (e) {
+          console.warn(`处理update_history失败: ${e.message}`);
+          updateHistory = [];
+        }
+
+        const fields = {
+          location: rec.location || '',
+          floor: rec.floor || '',
+          subcontractor: rec.subcontractor || '',
+          number: rec.number || 0,
+          process: rec.process || '',
+          time_range: rec.time_range || '',
+          safetyStatus: formatConfig.timeSegments.map(segment => {
+            const hasTimeInSegment = updateHistory.some(timestamp => parseTimeSegment(timestamp, groupId) === segment.name);
+            
+            const now = new Date();
+            const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
+            
+            return hasTimeInSegment
+            ? `${segment.name}⭕`
+            : (nowMinutes < segment.end ? `${segment.name}` : `${segment.name}❌`);
+          }).join('，'),
+          xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
+        };
+
+        const recordLine = `${fields.location}，${fields.floor}，${fields.subcontractor}，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
+        const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
+        return `${recordLine}\n${safetyLine}`;
+      });
+      return `${building}\n${buildingDetails.join('\n')}`;
+    });
+
+    return details;
 }
 
 function ensureDir(dir) {
