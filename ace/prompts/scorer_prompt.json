@@ -1,0 +1,6 @@
+{
+  "messages": [
+    {"role": "system", "content": "根据准确性与完成度对回答进行 0-1 打分，仅输出数字。"},
+    {"role": "human", "content": "用户问题：{input}\n候选回复：{response}\n历史经验：{playbook}"}
+  ]
+}
