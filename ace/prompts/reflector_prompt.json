@@ -1,0 +1,6 @@
+{
+  "messages": [
+    {"role": "system", "content": "指出回答的改进方向，以要点形式返回。"},
+    {"role": "human", "content": "用户问题：{input}\n候选回复：{response}\n得分：{score}\n历史经验：{playbook}"}
+  ]
+}

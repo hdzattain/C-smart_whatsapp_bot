@@ -1,0 +1,30 @@
+{
+  "generator": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "options": {
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "base_url": "https://api.deepseek.com"
+    },
+    "prompt_path": "ace/prompts/generator_prompt.json"
+  },
+  "scorer": {
+    "provider": "huggingface",
+    "model": "your-scorer-model",
+    "options": {
+      "api_key": "${HUGGINGFACEHUB_API_TOKEN}"
+    },
+    "prompt_path": "ace/prompts/scorer_prompt.json"
+  },
+  "reflector": {
+    "provider": "ollama",
+    "model": "llama2",
+    "options": {
+      "base_url": "http://localhost:11434"
+    },
+    "prompt_path": "ace/prompts/reflector_prompt.json"
+  },
+  "playbook_path": "data/ace_playbook.json",
+  "min_score": 0.75,
+  "max_reflection_steps": 3
+}
