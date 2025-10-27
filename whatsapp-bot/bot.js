@@ -613,7 +613,7 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /(撤離|已撤離|人走晒|收工)/.test(query) && /位置|分包商|\d+人/.test(query),
+          test: query => /(撤離|已撤離|人走晒|收工)/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
@@ -871,7 +871,7 @@ async function audioToText(filepath, user) {
 }
 
 // — 发送消息到 FastGPT，返回 content 字段 —
-async function sendToFastGPT({ query, user, msg }) {
+async function sendToFastGPT({ query, user, apikey }) {
   const chatId = uuidv4(); // 生成随机 chatId
   const data = {
     chatId: chatId,
@@ -893,7 +893,7 @@ async function sendToFastGPT({ query, user, msg }) {
         data,
         {
           headers: {
-            'Authorization': `Bearer ${FASTGPT_API_KEY}`,
+            'Authorization': `Bearer ${apikey}`,
             'Content-Type': 'application/json'
           },
           timeout: 25000 // 25秒超时，防止僵死
