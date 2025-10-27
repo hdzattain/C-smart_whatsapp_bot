@@ -161,21 +161,46 @@ def insert_one_record(data):
     end_time = f"{today_str} 23:59:59"
 
     # 查找当天已存在的记录
-    check_sql = f"""
-        SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
-        WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
-        AND `bstudio_create_time` BETWEEN %s AND %s
-        ORDER BY id DESC LIMIT 1
-    """
-    params = (
-        clean_string(data.get("group_id", "")),
-        clean_string(data.get("location", "")),
-        clean_string(data.get("subcontractor", "")),
-        data.get("number", 0),  # 整数，无需清理
-        clean_string(data.get("floor", "")),
-        start_time,  # 日期，无需清理
-        end_time    # 日期，无需清理
-    )
+    # 如果是外墙群组，需要添加 process 和 time_range 的查询条件
+    is_scaffold_group = data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+
+    if is_scaffold_group:
+        # 外墙群组：添加 process 和 time_range 查询条件
+        check_sql = f"""
+            SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
+            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+            AND REPLACE(`process`,' ','')=%s AND `time_range`=%s
+            AND `bstudio_create_time` BETWEEN %s AND %s
+            ORDER BY id DESC LIMIT 1
+        """
+        params = (
+            clean_string(data.get("group_id", "")),
+            clean_string(data.get("location", "")),
+            clean_string(data.get("subcontractor", "")),
+            data.get("number", 0),
+            clean_string(data.get("floor", "")),
+            clean_string(data.get("process", "")),
+            clean_string(data.get("time_range", "")),
+            start_time,
+            end_time
+        )
+    else:
+        # 非外墙群组：保持原查询条件
+        check_sql = f"""
+            SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
+            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+            AND `bstudio_create_time` BETWEEN %s AND %s
+            ORDER BY id DESC LIMIT 1
+        """
+        params = (
+            clean_string(data.get("group_id", "")),
+            clean_string(data.get("location", "")),
+            clean_string(data.get("subcontractor", "")),
+            data.get("number", 0),
+            clean_string(data.get("floor", "")),
+            start_time,
+            end_time
+        )
 
     conn = get_conn()
     exists = None
