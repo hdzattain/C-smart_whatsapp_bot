@@ -654,7 +654,7 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /(撤離|已撤離|人走晒|收工)/.test(query) && /位置|分包商|\d+人/.test(query),
+          test: query => /(撤離|已撤離|人走晒|收工)/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
