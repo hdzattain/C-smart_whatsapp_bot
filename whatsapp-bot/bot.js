@@ -16,8 +16,8 @@ const GROUP_ID_3 = '120363030675916527@g.us';
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
 const DIFY_BASE_URL = process.env.DIFY_BASE_URL || 'https://api.dify.ai/v1';
-const FASTGPT_API_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
-const FASTGPT_API_KEY = 'openapi-ziUjnlzVwlIvEITHVZ9M4XXmMLBtyjbgTBZbybRS3xI5HtNyuSOKIlIZl9Qb';
+const FASTGPT_API_URL = 'http://43.154.37.138:3008/api/v1/chat/completions';
+const FASTGPT_API_KEY = 'fastgpt-uhlgWY5Lsti1X4msKMzDHheQ4AAEH4hfzr7fczsBA5nA14HEwF7AZ2Nua234Khai';
 const BOT_NAME      = process.env.BOT_NAME || 'C-SMART'; // 机器人昵称
 
 const TIME_SEGMENTS = [
@@ -312,7 +312,13 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
 
     const details = Object.keys(byBuilding).sort().map(building => {
       const records = byBuilding[building];
-      const buildingDetails = records.map(rec => {
+
+      // 按ID排序
+      const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
+      // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
+      const buildingLetter = building === '未知' ? '' : building.replace('座', '');
+
+      const buildingDetails = sortedRecords.map((rec, index) => {
         let updateHistory = [];
         try {
           if (typeof rec.update_history === 'string' && rec.update_history.trim()) {
@@ -326,8 +332,11 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
           updateHistory = [];
         }
 
+        // 生成前缀（A01-, A02-, B01-, B02- 等）
+        const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+
         const fields = {
-          location: rec.location || '',
+          location: `${prefix}${rec.location || ''}`,
           floor: rec.floor || '',
           subcontractor: rec.subcontractor || '',
           number: rec.number || 0,
@@ -458,9 +467,9 @@ client.on('message', async msg => {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
-    if (!isGroup) {
+    if (!isGroup || msg.body.includes('Permit')) {
       console.log('不是群聊消息，不回复用户');
-      appendLog(user, '不是群聊消息，不回复用户');
+      appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
       return;
     }
     // 在发送到API前，记录 group_id

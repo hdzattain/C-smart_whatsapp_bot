@@ -14,10 +14,13 @@ app = Flask(__name__)
 EXTERNAL_SCAFFOLDING_GROUPS = ['120363400601106571@g.us']
 
 EXTERNAL_SCAFFOLDING_PROCESSES = [
-    "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線", 
-    "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水"]
+    "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線",
+    "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水", "清竹棚",
+    "釘板", "钉板", "打膠筒", "打胶筒", "開墨", "开墨", "批盪", "批荡", "較碼", "较码",
+    "打碼", "打码", "點焊", "点焊"]
 
-EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆", "打膠桶", "平水"]
+EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆",
+                                        "打膠桶", "平水", "清竹棚", "釘板", "打膠筒", "開墨", "批盪", "較碼", "打碼", "點焊"]
 
 DB_CONFIG = {
     "host": "10.25.0.42",
@@ -121,15 +124,14 @@ def insert_one_record(data):
     is_scaffold_group = data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
     required = ["location", "subcontractor", "number", "floor"]
     if is_scaffold_group:
-        required.extend(["process", "time_range"])
+        required.extend(["process"])
 
     name_dict = {
         "location": "位置",
         "subcontractor": "分判",
         "number": "人數",
         "floor": "樓層",
-        "process": "工序",
-        "time_range": "時間"
+        "process": "工序"
     }
     missing_keys = [k for k in required if not data.get(k)]
     if missing_keys:
@@ -161,7 +163,7 @@ def insert_one_record(data):
     # 查找当天已存在的记录
     check_sql = f"""
         SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
-        WHERE `group_id`=%s AND `location`=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+        WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
         AND `bstudio_create_time` BETWEEN %s AND %s
         ORDER BY id DESC LIMIT 1
     """
@@ -248,24 +250,34 @@ def validate_process(data):
 def validate_time_range(data):
     """校验时间范围格式"""
     time_range = data.get("time_range", "")
-    
-    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and not re.match(r"^\d{4}-\d{4}$", time_range):
-        return {"error": "時間格式錯誤，應為 0900-1730"}
+
+    # 如果是外墙棚架群组
+    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS:
+        # 如果time_range为空，赋予默认值
+        if not time_range or time_range.strip() == "":
+            data["time_range"] = "0800-1800"  # 默认工作时间
+            return None
+
+        # 校验格式
+        if not re.match(r"^\d{4}-\d{4}$", time_range):
+            return {"error": "時間格式錯誤，應為 0900-1730"}
+
+    return None
+
 
 # --- 外墙棚架 楼栋提取 ---
 def extract_building(location):
     """改进的楼栋提取函数"""
     location = clean_string(location)
     building = "未知"
-    
-    # 匹配格式：字母数字(允许最多3位)-BLK字母 或 字母数字
-    building_regex = r'^([A-Z])\d{1,3}(?:-BLK\s*([A-Z]))?'
-    match = re.match(building_regex, location, re.IGNORECASE)
+
+    # 匹配 BLK A XXX 格式
+    blk_regex = r'^BLK\s*([A-Z])'
+    match = re.match(blk_regex, location, re.IGNORECASE)
     if match:
-        # 优先使用BLK后面的字母，如果没有则使用前面的字母
-        building_letter = (match.group(2) or match.group(1)).upper()
+        building_letter = match.group(1).upper()
         building = f"{building_letter}座"
-    
+
     return building
 
 
@@ -369,6 +381,12 @@ def update_by_condition():
                     conditions.append(f"`{key}` BETWEEN %s AND %s")
                     params.extend([start, end])
                     continue
+            if key == "location":
+                # 将、，分隔符统一转换为逗号进行比较
+                conditions.append(
+                    "REPLACE(REPLACE(REPLACE(`location`, '、', ','), ' ', ''), '，', ',') "
+                    "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
+                params.append(value)
             if key in string_fields:
                 conditions.append(f"BINARY `{key}` = %s")
             else:
