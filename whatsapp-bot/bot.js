@@ -654,11 +654,11 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /(撤離|已撤離|人走晒|收工|撤离|已撤离|人走完)/.test(query),
+          test: query => /(撤離|已撤離|人走晒|收工)/.test(query) && /位置|分包商|\d+人/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|撤回|删除某天申请|删除某位置记录/.test(query),
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|删除某天申请|删除某位置记录/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
         }
       ];
@@ -1081,5 +1081,4 @@ cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
-
 
