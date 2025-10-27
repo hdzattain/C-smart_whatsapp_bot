@@ -16,8 +16,8 @@ const GROUP_ID_3 = '120363030675916527@g.us';
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
 const DIFY_BASE_URL = process.env.DIFY_BASE_URL || 'https://api.dify.ai/v1';
-const FASTGPT_API_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
-const FASTGPT_API_KEY = 'openapi-ziUjnlzVwlIvEITHVZ9M4XXmMLBtyjbgTBZbybRS3xI5HtNyuSOKIlIZl9Qb';
+const FASTGPT_API_URL = 'http://43.154.37.138:3008/api/v1/chat/completions';
+const FASTGPT_API_KEY = 'fastgpt-uhlgWY5Lsti1X4msKMzDHheQ4AAEH4hfzr7fczsBA5nA14HEwF7AZ2Nua234Khai';
 const BOT_NAME      = process.env.BOT_NAME || 'C-SMART'; // 机器人昵称
 
 const TIME_SEGMENTS = [
@@ -312,7 +312,13 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
 
     const details = Object.keys(byBuilding).sort().map(building => {
       const records = byBuilding[building];
-      const buildingDetails = records.map(rec => {
+
+      // 按ID排序
+      const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
+      // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
+      const buildingLetter = building === '未知' ? '' : building.replace('座', '');
+
+      const buildingDetails = sortedRecords.map((rec, index) => {
         let updateHistory = [];
         try {
           if (typeof rec.update_history === 'string' && rec.update_history.trim()) {
@@ -326,8 +332,11 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
           updateHistory = [];
         }
 
+        // 生成前缀（A01-, A02-, B01-, B02- 等）
+        const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+
         const fields = {
-          location: rec.location || '',
+          location: `${prefix}${rec.location || ''}`,
           floor: rec.floor || '',
           subcontractor: rec.subcontractor || '',
           number: rec.number || 0,
@@ -460,7 +469,7 @@ client.on('message', async msg => {
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     if (!isGroup || msg.body.includes('Permit')) {
       console.log('不是群聊消息，不回复用户');
-      appendLog(user, '不是群聊消息，不回复用户');
+      appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
       return;
     }
     // 在发送到API前，记录 group_id
@@ -568,19 +577,73 @@ client.on('message', async msg => {
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
-    // —— 调用 FastGPT，拿到返回的 JSON 数据 ——
+    // —— 调用 FastGPT，拿到返回的 JSON 数据 —— 临时注释掉有幻觉的agent调用，直接调用工作流
+    // let replyStr;
+    // try {
+    //   query = `${query} [group_id:${groupId}]`;
+    //   console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   replyStr = await sendToFastGPT({ query, user, msg });
+    //   console.log(`FastGPT response content: ${replyStr}`);
+    //   appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    // } catch (e) {
+    //   console.log(`FastGPT 调用失败: ${e.message}`);
+    //   appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+    //   if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+    //   return;
+    // }
+    // API key 常量，命名清晰且具可讀性
+    const API_KEYS = {
+      EPERMIT_UPDATE: 'fastgpt-j3A7GuAA7imPLdKBdt1YSE92nRlYTVIfrn43XoJAcz0sq81jUtZyEpTvPZYFBk0Ow',
+      EPERMIT_RECORD: 'fastgpt-ac2n964yZB9iX1utRBxtJAyIAbXG08OvDPF451tDqsa8sE3BQKAQP',
+      EPERMIT_DELETE: 'fastgpt-rP1hrMsmSZlNEo3RFEsLurtNYRBiqSICxUz3xTYGSU1VYO86jRD9v60P1ViyqNkIK'
+    };
+
+    // 處理查詢的主函數
+    async function processQuery(query, groupId, user) {
+      query = `${query} [group_id:${groupId}]`;
+
+      const conditions = [
+        {
+          test: query => /申請|申報|以下為申請位置/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
+        },
+        {
+          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣带|返回室内/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
+        },
+        {
+          test: query => /(撤離|已撤離|人走晒|收工)/.test(query) && /位置|分包商|\d+人/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
+        },
+        {
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
+        }
+      ];
+
+      const matchedCondition = conditions.find(c => c.test(query));
+      return matchedCondition ? await matchedCondition.action() : null;
+    }
+
+    // 替換後的模組代碼
     let replyStr;
     try {
-      query = `${query} [group_id:${groupId}]`;
-      console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-      appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-      replyStr = await sendToFastGPT({ query, user, msg });
-      console.log(`FastGPT response content: ${replyStr}`);
-      appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+      console.log(`開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
+      appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
+      replyStr = await processQuery(query, groupId, user);
+      if (replyStr === null) {
+        console.log('無匹配條件，無法處理查詢');
+        appendLog(groupId, '無匹配條件，無法處理查詢');
+        if (needReply) await msg.reply('無法處理您的請求，請檢查輸入內容。');
+        return;
+      }
+      console.log(`查詢處理完成，結果: ${replyStr}`);
+      appendLog(groupId, `查詢處理完成，結果: ${replyStr}`);
     } catch (e) {
-      console.log(`FastGPT 调用失败: ${e.message}`);
-      appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-      if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+      console.log(`查詢處理失敗: ${e.message}`);
+      appendLog(groupId, `查詢處理失敗: ${e.message}`);
+      if (needReply) await msg.reply('處理請求失敗，請稍後再試。');
       return;
     }
 
@@ -960,5 +1023,4 @@ cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
-
 
