@@ -1011,6 +1011,9 @@ async function handleInspBot(msg, groupId, needReply) {
     const ext = mime.extension(media.mimetype) || 'jpg';
     const filename = `img_${Date.now()}.${ext}`;
     const groupImgPath = path.join(TMP_DIR, groupId);
+    if (!fs.existsSync(groupImgPath)) {
+        fs.mkdirSync(groupImgPath, { recursive: true });
+    }
     const filepath = path.join(groupImgPath, filename);
     await fsPromises.writeFile(filepath, Buffer.from(media.data, 'base64'));
     console.log(`[LOG] 图片已保存: ${filepath}`);
@@ -1804,5 +1807,6 @@ function shouldReply(msg, botName) {
 async function audioToText(filepath, user) {
   return '语音转文字结果（占位）';
 }
+
 
 
