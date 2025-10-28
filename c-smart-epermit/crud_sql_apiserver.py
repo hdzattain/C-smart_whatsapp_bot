@@ -34,7 +34,7 @@ FIELDS = [
     "id", "group_id", "project", "uuid", "bstudio_create_time",
     "location", "number", "floor", "morning",
     "afternoon", "xiaban", "subcontractor", "part_leave_number",
-    "process", "time_range", "building"
+    "process", "time_range", "building", "update_history"
 ]
 # --- DB Utility ---
 def get_conn():
@@ -550,3 +550,4 @@ def show_columns():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
