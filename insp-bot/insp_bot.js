@@ -1600,6 +1600,7 @@ const client = new Client({
     dataPath: path.join(__dirname, '.wwebjs_auth')
   }),
   puppeteer: {
+    executablePath: '/usr/bin/google-chrome-stable',  // Linux 默认路径
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 });
