@@ -11,7 +11,12 @@ from typing import Optional
 app = Flask(__name__)
 
 # --- 外墙棚架群组定义 ---
-EXTERNAL_SCAFFOLDING_GROUPS = ['120363400601106571@g.us']
+EXTERNAL_SCAFFOLDING_GROUPS = [
+    '120363400601106571@g.us',
+    '120363372181860061@g.us',
+    '120363401312839305@g.us',
+    '120363162893788546@g.us'
+]
 
 EXTERNAL_SCAFFOLDING_PROCESSES = [
     "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線",
@@ -20,7 +25,8 @@ EXTERNAL_SCAFFOLDING_PROCESSES = [
     "打碼", "打码", "點焊", "点焊"]
 
 EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆",
-                                        "打膠桶", "平水", "清竹棚", "釘板", "打膠筒", "開墨", "批盪", "較碼", "打碼", "點焊"]
+                                        "打膠桶", "平水", "清竹棚", "釘板", "打膠筒", "開墨", "批盪", "較碼", "打碼",
+                                        "點焊"]
 
 DB_CONFIG = {
     "host": "10.25.0.42",
@@ -37,8 +43,10 @@ FIELDS = [
     "id", "group_id", "project", "uuid", "bstudio_create_time",
     "location", "number", "floor", "morning",
     "afternoon", "xiaban", "subcontractor", "part_leave_number",
-    "process", "time_range", "building"
+    "process", "time_range", "building", "update_history"
 ]
+
+
 # --- DB Utility ---
 def get_conn():
     return connect(**DB_CONFIG)
@@ -137,22 +145,23 @@ def insert_one_record(data):
     if missing_keys:
         missing_names = [name_dict[k] for k in missing_keys]
         if is_scaffold_group:
-            return {"error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請A03-BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
+            return {
+                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請A03-BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
         else:
-            return {"error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
+            return {
+                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
 
     # 校验工序
     if error := validate_process(data):
         return error
 
-    # 校验 time_range 格式  
+    # 校验 time_range 格式
     if error := validate_time_range(data):
         return error
 
     # 楼栋提取
     building = extract_building(data.get("location", ""))
     data["building"] = building
-
 
     number = int(data["number"])
     new_part = int(data.get("part_leave_number", 0) or 0)
@@ -196,10 +205,10 @@ def insert_one_record(data):
             clean_string(data.get("group_id", "")),
             clean_string(data.get("location", "")),
             clean_string(data.get("subcontractor", "")),
-            data.get("number", 0),
+            data.get("number", 0),  # 整数，无需清理
             clean_string(data.get("floor", "")),
-            start_time,
-            end_time
+            start_time,  # 日期，无需清理
+            end_time  # 日期，无需清理
         )
 
     conn = get_conn()
@@ -268,8 +277,9 @@ def validate_process(data):
     """校验工序字段"""
     process_input = data.get("process", "")
     processes = list(filter(None, re.split(r'[,，\s]+', process_input)))
-    
-    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
+
+    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (
+            not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
         return {"error": f"工序無效，應為 {', '.join(EXTERNAL_SCAFFOLDING_VALID_PROCESSES)} 的組合"}
 
 def validate_time_range(data):
@@ -386,7 +396,7 @@ def update_by_condition():
     print("Received updates:", updates)
     # 自动添加当前北京时间的 bstudio_create_time 到 updates
     current_time = generate_gmt_cst_time()
-    
+
     print("after time added updates:", updates)
     print("FIELDS:", FIELDS)
 
@@ -427,11 +437,20 @@ def update_by_condition():
     update_params = []
     for key, value in updates.items():
         if key in FIELDS:
+            # part_leave_number 做累加更新
+            if key == "part_leave_number" and filters.get("group_id") not in EXTERNAL_SCAFFOLDING_GROUPS:
+                try:
+                    inc = int(value)
+                except (TypeError, ValueError):
+                    inc = 0
+                update_clause.append("`part_leave_number` = IFNULL(`part_leave_number`, 0) + %s")
+                update_params.append(inc)
+                continue
             update_clause.append(f"`{key}` = %s")
             update_params.append(value)
         else:
             print(f"Warning: Update field {key} not in FIELDS")
-    
+
     # 添加update_history字段的更新
     safety_flag = updates.get("safety_flag")
     if safety_flag == 1:
@@ -442,26 +461,25 @@ def update_by_condition():
     else:
         print(f"safety_flag为{safety_flag}，跳过update_history字段更新")
 
-
     if not update_clause:
         return jsonify({"error": "无可更新字段"}), 400
 
     sql = f"UPDATE `{TABLE_NAME}` SET {', '.join(update_clause)} WHERE {' AND '.join(conditions)}"
     total_params = tuple(update_params + params)
-    
+
     print("SQL:", sql)
     print("Params:", total_params)
-    
+
     select_sql = f"SELECT * FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
     print("Debug SELECT SQL:", select_sql)
     print("Debug SELECT Params:", params)
-    
+
     try:
         # 执行 SELECT 查询，设置 fetch=True 获取结果集
         select_result = execute_query(select_sql, params, fetch=True)
         select_count = len(select_result) if select_result else 0
         print("SELECT result count:", select_count)
-        
+
         # 如果记录存在，返回成功（即使更新没有影响行）
         if select_count > 0:
             count = execute_query(sql, total_params, fetch=False)
@@ -481,6 +499,121 @@ def update_by_condition():
     except Exception as e:
         print("Query error:", str(e))
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
+
+
+# 新增工人
+@app.route("/records/add_worker", methods=["POST"])
+def add_worker():
+    data = request.get_json(force=True)
+
+    # 1. 支持批量或单条
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = add_worker_func(rec)
+            results.append(res)
+        # 可返回所有条目结果
+        return jsonify(results), 207 if any(r.get('error') for r in results) else 201
+
+    # 单条
+    res = add_worker_func(data)
+    if "error" in res:
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+def add_worker_func(data):
+    """
+    新增工人：累加更新现有记录的 number 字段
+    - 不处理外墙棚架群组
+    - 需要 location, floor, number, subcontractor 四个必填字段
+    - 根据 group_id, location, subcontractor, floor 和当天日期查询记录
+    - 如果存在则累加更新 number 字段
+    """
+    # 1. 校验是否为外墙棚架群组
+    group_id = data.get("group_id", "")
+    if group_id in EXTERNAL_SCAFFOLDING_GROUPS:
+        return {"error": "外墙棚架群组不支持新增工人操作"}
+
+    # 2. 校验必填字段
+    required = ["location", "floor", "number", "subcontractor"]
+    name_dict = {
+        "location": "位置",
+        "floor": "樓層",
+        "number": "人數",
+        "subcontractor": "分判"
+    }
+    missing_keys = [k for k in required if not data.get(k)]
+    if missing_keys:
+        missing_names = [name_dict[k] for k in missing_keys]
+        return {"error": f"缺少必填字段: {', '.join(missing_names)}"}
+
+    # 校验 number 是否为有效数字
+    try:
+        add_number = int(data.get("number", 0))
+        if add_number <= 0:
+            return {"error": "新增人數必須大於0"}
+    except (ValueError, TypeError):
+        return {"error": "人數必須為有效數字"}
+
+    # 3. 查询数据库是否存在记录
+    # 使用当天的日期范围进行查询 +8小时
+    today_str = datetime.now(pytz.timezone('Asia/Shanghai')).strftime("%Y-%m-%d")
+    start_time = f"{today_str} 00:00:00"
+    end_time = f"{today_str} 23:59:59"
+    # 打印时间日志用于调试
+    print(f"新增工人-查询时间范围: {start_time} 至 {end_time}")
+
+    # 构建查询SQL（参考 insert_one_record 中非外墙群组的查询逻辑）
+    check_sql = f"""
+        SELECT id, number FROM `{TABLE_NAME}`
+        WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `floor`=%s
+        AND `bstudio_create_time` BETWEEN %s AND %s
+        ORDER BY id DESC LIMIT 1
+    """
+    params = (
+        clean_string(group_id),
+        clean_string(data.get("location", "")),
+        clean_string(data.get("subcontractor", "")),
+        clean_string(data.get("floor", "")),
+        start_time,
+        end_time
+    )
+
+    conn = get_conn()
+    exists = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(check_sql, params)
+            exists = cur.fetchone()
+    finally:
+        conn.close()
+
+    # 4. 如果不存在记录，返回错误
+    if not exists:
+        return {"error": "未找到匹配的记录，无法新增工人"}
+
+    # 5. 如果存在，累加更新 number 字段
+    record_id = exists["id"]
+    current_number = int(exists.get("number", 0))
+    new_number = current_number + add_number
+
+    update_sql = f"UPDATE `{TABLE_NAME}` SET `number`=%s WHERE `id`=%s"
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(update_sql, (new_number, record_id))
+            conn.commit()
+        return {
+            "status": "ok",
+            "id": record_id,
+            "old_number": current_number,
+            "added_number": add_number,
+            "new_number": new_number
+        }
+    finally:
+        conn.close()
+
 
 @app.route("/records/<int:record_id>", methods=["PUT"])
 def update_record(record_id):
@@ -528,7 +661,7 @@ def delete_records():
 def delete_fastgpt_records():
     filters = request.get_json(silent=True) or request.args.to_dict()
     print(f"Received request data: {filters}")
-    
+
     if not filters:
         return jsonify({"error": "请提供过滤条件"}), 400
 
@@ -560,7 +693,7 @@ def delete_fastgpt_records():
 
     sql = f"DELETE FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
     total_params = tuple(params)
-    
+
     print(f"Generated SQL: {sql}")
     print(f"Total params: {total_params}")
 

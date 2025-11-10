@@ -13,6 +13,24 @@ const cron = require('node-cron');
 const GROUP_ID = '120363418441024423@g.us'; // 替换成目标群聊ID
 const GROUP_ID_2 = '120363400601106571@g.us'; // 替换成目标群聊ID
 const GROUP_ID_3 = '120363030675916527@g.us';
+const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆棚架工作
+const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
+const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
+
+// 外墙棚架群组定义
+const EXTERNAL_SCAFFOLDING_GROUPS = [
+    GROUP_ID_2,
+    GROUP_ID_4,
+    GROUP_ID_5,
+    GROUP_ID_6
+]
+
+// 完全静默群组配置
+const BLACKLIST_GROUPS = [
+  GROUP_ID_4,
+  GROUP_ID_5,
+  GROUP_ID_6
+];
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
 const DIFY_BASE_URL = process.env.DIFY_BASE_URL || 'https://api.dify.ai/v1';
@@ -24,6 +42,23 @@ const TIME_SEGMENTS = [
   { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
   { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
 ];
+
+const EXTERNAL_SCAFFOLDING_FORMAT = {
+  title: 'External Scaffolding Work(Permit to work)',
+  guidelines: [
+    '外牆棚工作許可證填妥及齊簽名視為開工',
+    '✅❎為中建影安全相，⭕❌為分判影安全相',
+    '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange', ''],
+  timeSegments: [
+    { name: '上午', start: 360, end: 660, field: 'morning' },
+    { name: '飯前', start: 660, end: 720, field: 'morning' },
+    { name: '飯後', start: 720, end: 840, field: 'afternoon' },
+    { name: '下午', start: 840, end: 1320, field: 'afternoon' }
+  ],
+  detailGenerator: generateExternalSummaryDetails
+};
 
 /**
  * 群組格式配置，支持不同群組的摘要格式。
@@ -43,22 +78,10 @@ const GROUP_FORMATS = {
     ],
     detailGenerator: generateSummaryDetails
   },
-  [GROUP_ID_2]: {
-    title: 'External Scaffolding Work(Permit to work)',
-    guidelines: [
-      '外牆棚工作許可證填妥及齊簽名視為開工',
-      '✅❎為中建影安全相，⭕❌為分判影安全相',
-      '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
-    ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'rangeTime', ''],
-    timeSegments: [
-      { name: '上午', start: 360, end: 660, field: 'morning' }, // 06:00-11:00
-      { name: '飯前', start: 660, end: 720, field: 'morning' }, // 11:00-12:00
-      { name: '飯後', start: 720, end: 840, field: 'afternoon' }, // 12:00-14:00
-      { name: '下午', start: 840, end: 1320, field: 'afternoon' } // 14:00-22:00
-    ],
-    detailGenerator: generateExternalSummaryDetails
-  },
+  [GROUP_ID_2]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_4]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   // 未來群組可在此添加自定義格式
   default: {
     title: 'LiftShaft (Permit to Work)',
@@ -75,6 +98,7 @@ const GROUP_FORMATS = {
     detailGenerator: generateSummaryDetails
   }
 };
+
 
 const TMP_DIR  = path.join(__dirname, 'tmp');
 fs.ensureDirSync(TMP_DIR);
@@ -105,7 +129,7 @@ client.on('ready', () => {
   appendLog('default', 'WhatsApp 机器人已启动');
 });
 
-// —— 关键词检测 ——  
+// —— 关键词检测 ——
 function containsSummaryKeyword(text) {
   const keywords = [
     '总结', '概括', '总结一下', '整理情况', '汇总', '回顾',
@@ -114,10 +138,16 @@ function containsSummaryKeyword(text) {
   return keywords.some(k => text.includes(k));
 }
 
+// 检查群组是否在黑名单中（使用包含检查）
+function isBlacklistedGroup(msgFrom) {
+  if (!msgFrom) return false;
+  return BLACKLIST_GROUPS.some(blacklistId => msgFrom.includes(blacklistId));
+}
 
-// —— 后端返回数据的处理函数 ——  
+
+// —— 后端返回数据的处理函数 ——
 // function parseDate(dtStr) {
-//   // 尝试用 Date 解析，否则截取前 10 个字符  
+//   // 尝试用 Date 解析，否则截取前 10 个字符
 //   const d = new Date(dtStr);
 //   if (!isNaN(d)) {
 //     return d.toISOString().slice(0, 10);
@@ -171,11 +201,11 @@ function xiabanText(xiaban, part_leave_number, num) {
  */
 function parseTimeSegment(timeStr, groupId = 'default') {
   if (!timeStr) return '未知';
-  
+
   try {
     const date = new Date(timeStr);
     if (isNaN(date.getTime())) return '未知';
-    
+
     const hours = date.getUTCHours();
     const minutes = date.getUTCMinutes();
     const timeInMinutes = hours * 60 + minutes;
@@ -204,13 +234,13 @@ function parseTimeSegment(timeStr, groupId = 'default') {
  */
 function formatSummary(data, groupId = 'default') {
   if (!Array.isArray(data) || data.length === 0) return "今日無工地記錄";
-  
+
   // 獲取群組格式配置，默認為 default
   const formatConfig = GROUP_FORMATS[groupId] || GROUP_FORMATS.default;
-  
+
   // 解析日期
   const dateStr = parseDate(data[0].bstudio_create_time || '');
-  
+
   // 聚合分判商
   const contrs = [];
   const seen = new Set();
@@ -261,7 +291,7 @@ function generateSummaryDetails(data, formatConfig, groupId) {
       console.error(`处理update_history时出错: ${e.message}`);
       updateHistory = [];
     }
-    
+
     const fields = {
       location: rec.location || '',
       subcontractor: rec.subcontrator || rec.subcontractor || '',
@@ -276,7 +306,7 @@ function generateSummaryDetails(data, formatConfig, groupId) {
             return false;
           }
         });
-        
+
         return `${segment.name} ${hasTimeInSegment ? '✅' : '❎'}`;
       }).join('，'),
       xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
@@ -344,10 +374,10 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
           time_range: rec.time_range || '',
           safetyStatus: formatConfig.timeSegments.map(segment => {
             const hasTimeInSegment = updateHistory.some(timestamp => parseTimeSegment(timestamp, groupId) === segment.name);
-            
+
             const now = new Date();
             const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
-            
+
             return hasTimeInSegment
             ? `${segment.name}⭕`
             : (nowMinutes < segment.end ? `${segment.name}` : `${segment.name}❌`);
@@ -444,6 +474,10 @@ function extractAgentAnswer(logString) {
 function shouldReply(msg, botName) {
   // 只对群聊做判定，私聊永远回复
   if (!msg.from || msg.from.endsWith('@g.us')) {
+    if (isBlacklistedGroup(msg.from)) {
+      return false;
+    }
+
     // 群聊消息
     const text = (msg.body || '').trim();
     // WhatsApp 群聊 @ 机器人的格式为 @昵称 或带群内 mention
@@ -467,7 +501,7 @@ client.on('message', async msg => {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
-    if (!isGroup || msg.body.includes('Permit')) {
+    if (!isGroup || msg.body.includes('Permit') || msg.body.includes('提示') || msg.body.includes('留意')) {
       console.log('不是群聊消息，不回复用户');
       appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
       return;
@@ -484,6 +518,12 @@ client.on('message', async msg => {
       appendLog(groupId, `文本消息内容: ${query}`);
       // 如果用户输入包含「总结」等关键词，直接调用接口并返回结果
       if (containsSummaryKeyword(query)) {
+        if (isBlacklistedGroup(groupId)) {
+          console.log(`群组 ${groupId} 在黑名单中，禁止使用总结功能`);
+          appendLog(groupId, `群组在黑名单中，禁止使用总结功能`);
+          return; // 直接返回，不执行总结功能
+        }
+
         try {
           const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
             params: {
@@ -577,19 +617,82 @@ client.on('message', async msg => {
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
-    // —— 调用 FastGPT，拿到返回的 JSON 数据 ——
+    // —— 调用 FastGPT，拿到返回的 JSON 数据 —— 临时注释掉有幻觉的agent调用，直接调用工作流
+    // let replyStr;
+    // try {
+    //   query = `${query} [group_id:${groupId}]`;
+    //   console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   replyStr = await sendToFastGPT({ query, user, msg });
+    //   console.log(`FastGPT response content: ${replyStr}`);
+    //   appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    // } catch (e) {
+    //   console.log(`FastGPT 调用失败: ${e.message}`);
+    //   appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+    //   if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+    //   return;
+    // }
+    // API key 常量，命名清晰且具可讀性
+    const API_KEYS = {
+      EPERMIT_UPDATE: 'fastgpt-j3A7GuAA7imPLdKBdt1YSE92nRlYTVIfrn43XoJAcz0sq81jUtZyEpTvPZYFBk0Ow',
+      EPERMIT_RECORD: 'fastgpt-ac2n964yZB9iX1utRBxtJAyIAbXG08OvDPF451tDqsa8sE3BQKAQP',
+      EPERMIT_DELETE: 'fastgpt-rP1hrMsmSZlNEo3RFEsLurtNYRBiqSICxUz3xTYGSU1VYO86jRD9v60P1ViyqNkIK',
+      EPERMIT_ADD: 'fastgpt-jTBG55WM2xEXe06biuAg4WWgq4aqyrWvqiQKZ4uvRvLXgGaastDJ9CzKBgN'
+    };
+
+    // 處理查詢的主函數
+    async function processQuery(query, groupId, user) {
+      query = `${query} [group_id:${groupId}]`;
+
+      const conditions = [
+        {
+          test: query => /申請|申報|以下為申請位置|申请|申报|以下为申请位置/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
+        },
+        {
+          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣带|返回室内/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
+        },
+        {
+          test: query => /(撤離|已撤離|人走晒|收工|撤离|已撤离|人走完)/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
+        },
+        {
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|撤回|删除某天申请|删除某位置记录/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
+        }
+      ];
+
+      // 外墙棚架群组不走增加分支逻辑
+      if (!EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
+        conditions.push({
+          test: query => /增加/.test(query),
+          action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_ADD })
+        });
+      }
+
+      const matchedCondition = conditions.find(c => c.test(query));
+      return matchedCondition ? await matchedCondition.action() : null;
+    }
+
+    // 替換後的模組代碼
     let replyStr;
     try {
-      query = `${query} [group_id:${groupId}]`;
-      console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-      appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-      replyStr = await sendToFastGPT({ query, user, msg });
-      console.log(`FastGPT response content: ${replyStr}`);
-      appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+      console.log(`開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
+      appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
+      replyStr = await processQuery(query, groupId, user);
+      if (replyStr === null) {
+        console.log('無匹配條件，無法處理查詢');
+        appendLog(groupId, '無匹配條件，無法處理查詢');
+        if (needReply) await msg.reply('無法處理您的請求，請檢查輸入內容。');
+        return;
+      }
+      console.log(`查詢處理完成，結果: ${replyStr}`);
+      appendLog(groupId, `查詢處理完成，結果: ${replyStr}`);
     } catch (e) {
-      console.log(`FastGPT 调用失败: ${e.message}`);
-      appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-      if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+      console.log(`查詢處理失敗: ${e.message}`);
+      appendLog(groupId, `查詢處理失敗: ${e.message}`);
+      if (needReply) await msg.reply('處理請求失敗，請稍後再試。');
       return;
     }
 
@@ -613,7 +716,16 @@ client.on('message', async msg => {
   } catch (err) {
     console.log(`处理消息出错: ${err.message}`);
     appendLog(msg.from, `处理消息出错: ${err.message}`);
-    try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
+    if (!isBlacklistedGroup(msg.from)) {
+      try {
+        await msg.reply('机器人处理消息时出错，请稍后再试。');
+      } catch (replyErr) {
+        console.log(`发送错误回复失败: ${replyErr.message}`);
+      }
+    } else {
+      console.log(`群组 ${msg.from} 在黑名单中，不发送错误回复`);
+      appendLog(msg.from, '群组在黑名单中，不发送错误回复');
+    }
     console.log('处理消息时发生异常');
     appendLog(msg.from, '处理消息时发生异常');
   }
@@ -780,7 +892,7 @@ client.on('message', async msg => {
 
 client.initialize();
 
-// — 上传图片/文件到 Dify — 
+// — 上传图片/文件到 Dify —
 async function uploadFileToDify(filepath, user, type = 'image') {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -798,7 +910,7 @@ async function uploadFileToDify(filepath, user, type = 'image') {
   return res.data.id;
 }
 
-// — 语音转文字 — 
+// — 语音转文字 —
 async function audioToText(filepath, user) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -817,7 +929,7 @@ async function audioToText(filepath, user) {
 }
 
 // — 发送消息到 FastGPT，返回 content 字段 —
-async function sendToFastGPT({ query, user, msg }) {
+async function sendToFastGPT({ query, user, apikey }) {
   const chatId = uuidv4(); // 生成随机 chatId
   const data = {
     chatId: chatId,
@@ -839,7 +951,7 @@ async function sendToFastGPT({ query, user, msg }) {
         data,
         {
           headers: {
-            'Authorization': `Bearer ${FASTGPT_API_KEY}`,
+            'Authorization': `Bearer ${apikey}`,
             'Content-Type': 'application/json'
           },
           timeout: 25000 // 25秒超时，防止僵死
