@@ -144,17 +144,6 @@ function isBlacklistedGroup(msgFrom) {
   return BLACKLIST_GROUPS.some(blacklistId => msgFrom.includes(blacklistId));
 }
 
-
-// —— 后端返回数据的处理函数 ——
-// function parseDate(dtStr) {
-//   // 尝试用 Date 解析，否则截取前 10 个字符
-//   const d = new Date(dtStr);
-//   if (!isNaN(d)) {
-//     return d.toISOString().slice(0, 10);
-//   }
-//   return dtStr.slice(0, 10);
-// }
-
 /**
  * 解析 bstudio_create_time 的日期。
  * @param {string} timeStr - 時間字符串，格式為 "Tue, 12 Aug 2025 09:53:39 GMT"
@@ -892,4 +881,5 @@ cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
+
 
