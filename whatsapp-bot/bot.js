@@ -16,6 +16,7 @@ const GROUP_ID_3 = '120363030675916527@g.us';
 const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆棚架工作
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
+const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
@@ -27,7 +28,6 @@ const EXTERNAL_SCAFFOLDING_GROUPS = [
 
 // 完全静默群组配置
 const BLACKLIST_GROUPS = [
-  GROUP_ID_4,
   GROUP_ID_5,
   GROUP_ID_6
 ];
@@ -60,43 +60,33 @@ const EXTERNAL_SCAFFOLDING_FORMAT = {
   detailGenerator: generateExternalSummaryDetails
 };
 
+const NORMAL_FORMAT = {
+  title: 'LiftShaft (Permit to Work)',
+  guidelines: [
+    '升降機槽工作許可證填妥及齊簽名視為開工',
+    '✅❎為中建影安全相，⭕❌為分判影安全相',
+    '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+  timeSegments: [
+    { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+    { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+  ],
+  detailGenerator: generateSummaryDetails
+};
+
 /**
  * 群組格式配置，支持不同群組的摘要格式。
  */
 const GROUP_FORMATS = {
-  [GROUP_ID]: {
-    title: 'LiftShaft (Permit to Work)',
-    guidelines: [
-      '升降機槽工作許可證填妥及齊簽名視為開工',
-      '✅❎為中建影安全相，⭕❌為分判影安全相',
-      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
-    ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
-    timeSegments: [
-      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
-      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ],
-    detailGenerator: generateSummaryDetails
-  },
+  [GROUP_ID]: NORMAL_FORMAT,
   [GROUP_ID_2]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_4]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_7]: NORMAL_FORMAT,
   // 未來群組可在此添加自定義格式
-  default: {
-    title: 'LiftShaft (Permit to Work)',
-    guidelines: [
-      '升降機槽工作許可證填妥及齊簽名視為開工',
-      '✅❎為中建影安全相，⭕❌為分判影安全相',
-      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
-    ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
-    timeSegments: [
-      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
-      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ],
-    detailGenerator: generateSummaryDetails
-  }
+  default: NORMAL_FORMAT
 };
 
 
@@ -605,7 +595,7 @@ client.on('message', async msg => {
 
       const conditions = [
         {
-          test: query => /申請|申報|以下為申請位置|申请|申报|以下为申请位置/.test(query),
+          test: query => /申請|申報|以下為申請位置/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
         },
         {
@@ -617,7 +607,7 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|删除某天申请|删除某位置记录/.test(query),
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
         }
       ];
@@ -689,6 +679,7 @@ client.on('message', async msg => {
     appendLog(msg.from, '处理消息时发生异常');
   }
 });
+
 
 client.initialize();
 
@@ -783,7 +774,7 @@ async function sendToFastGPT({ query, user, apikey }) {
   throw lastErr;
 }
 
-// — 发送消息到 Dify，返回原始 SSE 文本 — 
+// — 发送消息到 Dify，返回原始 SSE 文本 —
 async function sendToDify({ query, user, files = [], response_mode = 'streaming', inputs = {} }) {
   const now = new Date().toLocaleString('zh-CN', { hour12: false });
   const uniqueQuery = `${query} @${now}`;
@@ -831,7 +822,7 @@ async function getSummary(group_id) {
     }
   });
   const data = resp.data;
-  const summary = formatSummary(data, group_id); 
+  const summary = formatSummary(data, group_id);
   await client.sendMessage(group_id, summary); // 主动发到群聊
 }
 
@@ -842,7 +833,7 @@ async function getOTSummary(group_id) {
     }
   });
   const data = resp.data;
-  const summary = formatOTSummary(data); 
+  const summary = formatOTSummary(data);
   await client.sendMessage(group_id, summary); // 主动发到群聊
 }
 
@@ -852,12 +843,16 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
+    getSummary(GROUP_ID_4);
+    getSummary(GROUP_ID_7);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -866,11 +861,15 @@ async function sendOTSummary() {
   try {
     getOTSummary(GROUP_ID_2);
     getOTSummary(GROUP_ID_3);
+    getOTSummary(GROUP_ID_4);
+    getOTSummary(GROUP_ID_7);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
   }
 }
 
