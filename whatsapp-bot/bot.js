@@ -16,6 +16,7 @@ const GROUP_ID_3 = '120363030675916527@g.us';
 const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆棚架工作
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
+const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
@@ -27,7 +28,6 @@ const EXTERNAL_SCAFFOLDING_GROUPS = [
 
 // 完全静默群组配置
 const BLACKLIST_GROUPS = [
-  GROUP_ID_4,
   GROUP_ID_5,
   GROUP_ID_6
 ];
@@ -60,43 +60,33 @@ const EXTERNAL_SCAFFOLDING_FORMAT = {
   detailGenerator: generateExternalSummaryDetails
 };
 
+const NORMAL_FORMAT = {
+  title: 'LiftShaft (Permit to Work)',
+  guidelines: [
+    '升降機槽工作許可證填妥及齊簽名視為開工',
+    '✅❎為中建影安全相，⭕❌為分判影安全相',
+    '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
+  timeSegments: [
+    { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+    { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+  ],
+  detailGenerator: generateSummaryDetails
+};
+
 /**
  * 群組格式配置，支持不同群組的摘要格式。
  */
 const GROUP_FORMATS = {
-  [GROUP_ID]: {
-    title: 'LiftShaft (Permit to Work)',
-    guidelines: [
-      '升降機槽工作許可證填妥及齊簽名視為開工',
-      '✅❎為中建影安全相，⭕❌為分判影安全相',
-      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
-    ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
-    timeSegments: [
-      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
-      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ],
-    detailGenerator: generateSummaryDetails
-  },
+  [GROUP_ID]: NORMAL_FORMAT,
   [GROUP_ID_2]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_4]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_7]: NORMAL_FORMAT,
   // 未來群組可在此添加自定義格式
-  default: {
-    title: 'LiftShaft (Permit to Work)',
-    guidelines: [
-      '升降機槽工作許可證填妥及齊簽名視為開工',
-      '✅❎為中建影安全相，⭕❌為分判影安全相',
-      '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
-    ],
-    showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
-    timeSegments: [
-      { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
-      { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
-    ],
-    detailGenerator: generateSummaryDetails
-  }
+  default: NORMAL_FORMAT
 };
 
 
@@ -552,11 +542,26 @@ client.on('message', async msg => {
         console.log(`图片已保存: ${filepath}`);
         appendLog(groupId, `图片已保存: ${filepath}`);
 
+        // 上传到 Dify
+        // // const file_id = await uploadFileToDify(filepath, user, 'image');
+        // console.log(`图片已上传到Dify，file_id: ${file_id}`);
+        // appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
+        // files.push({
+        //   type: 'image',
+        //   transfer_method: 'local_file',
+        //   upload_file_id: file_id
+        // });
+
         // 支持图文混合：读取 caption 或 body
         const caption = msg.caption || msg.body || '';
         query = caption ? `[图片] ${caption}` : '[图片]';
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
+
+        // 删除临时文件
+        // await fs.remove(filepath);
+        // console.log(`临时图片文件已删除: ${filepath}`);
+        // appendLog(groupId, `临时图片文件已删除: ${filepath}`);
       }
     } else if (['ptt', 'audio'].includes(msg.type)) {
       const media = await msg.downloadMedia();
@@ -602,6 +607,21 @@ client.on('message', async msg => {
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
+    // —— 调用 FastGPT，拿到返回的 JSON 数据 —— 临时注释掉有幻觉的agent调用，直接调用工作流
+    // let replyStr;
+    // try {
+    //   query = `${query} [group_id:${groupId}]`;
+    //   console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
+    //   replyStr = await sendToFastGPT({ query, user, msg });
+    //   console.log(`FastGPT response content: ${replyStr}`);
+    //   appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    // } catch (e) {
+    //   console.log(`FastGPT 调用失败: ${e.message}`);
+    //   appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+    //   if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
+    //   return;
+    // }
     // API key 常量，命名清晰且具可讀性
     const API_KEYS = {
       EPERMIT_UPDATE: 'fastgpt-j3A7GuAA7imPLdKBdt1YSE92nRlYTVIfrn43XoJAcz0sq81jUtZyEpTvPZYFBk0Ow',
@@ -616,7 +636,7 @@ client.on('message', async msg => {
 
       const conditions = [
         {
-          test: query => /申請|申報|以下為申請位置|申请|申报|以下为申请位置/.test(query),
+          test: query => /申請|申報|以下為申請位置/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
         },
         {
@@ -628,7 +648,7 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|删除某天申请|删除某位置记录/.test(query),
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
         }
       ];
@@ -700,6 +720,165 @@ client.on('message', async msg => {
     appendLog(msg.from, '处理消息时发生异常');
   }
 });
+// client.on('message', async msg => {
+//   try {
+//     const user = msg.from;
+//     let query = '';
+//     let files = [];
+
+//     // 判断是否群聊
+//     const chat = await msg.getChat();
+//     const isGroup = chat.isGroup;
+//     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}`);
+//     if (!isGroup) {
+//       appendLog(user, '不是群聊消息，不回复用户');
+//       return;
+//     }
+//     // 在发送到API前，记录 group_id
+//     const groupId = msg.from; // 这就是 WhatsApp 的群ID
+//     appendLog(groupId, msg.body);
+
+//     // —— 处理不同类型的 WhatsApp 消息 ——
+//     if (msg.type === 'chat') {
+//       query = msg.body.trim();
+//       appendLog(groupId, `文本消息内容: ${query}`);
+//       // 如果用户输入包含「总结」等关键词，直接调用接口并返回结果
+//       if (containsSummaryKeyword(query)) {
+//         try {
+//           const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
+//             params: {
+//               group_id: groupId // 替换为实际的群组ID
+//             }
+//           });
+//           // 假定接口返回的是一个 JSON 数组
+//           const data = resp.data;
+//           const summary = formatSummary(data);
+//           await msg.reply(summary);
+//         } catch (err) {
+//           appendLog(groupId, `调用 records/today 失败：${err.message}`);
+//           await msg.reply('获取今日记录失败，请稍后重试。');
+//         }
+//         return;  // 拦截后不再往下走 Dify 流程
+//       }
+//     } else if (msg.type === 'image') {
+//       // 图片（可能带有文字 caption）
+//       const media = await msg.downloadMedia();
+//       if (media) {
+//         const ext = mime.extension(media.mimetype) || 'jpg';
+//         const filename = `img_${Date.now()}.${ext}`;
+//         const filepath = path.join(TMP_DIR, filename);
+//         await fs.writeFile(filepath, media.data, 'base64');
+//         appendLog(groupId, `图片已保存: ${filepath}`);
+
+//         // 上传到 Dify
+//         const file_id = await uploadFileToDify(filepath, user, 'image');
+//         appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
+//         files.push({
+//           type: 'image',
+//           transfer_method: 'local_file',
+//           upload_file_id: file_id
+//         });
+
+//         // 支持图文混合：读取 caption 或 body
+//         const caption = msg.caption || msg.body || '';
+//         query = caption ? `[图片] ${caption}` : '[图片]';
+//         appendLog(groupId, `图文消息内容: ${query}`);
+
+//         // 删除临时文件
+//         await fs.remove(filepath);
+//         appendLog(groupId, `临时图片文件已删除: ${filepath}`);
+//       }
+//     } else if (['ptt', 'audio'].includes(msg.type)) {
+//       const media = await msg.downloadMedia();
+//       if (media) {
+//         const ext = mime.extension(media.mimetype) || 'ogg';
+//         const filename = `audio_${Date.now()}.${ext}`;
+//         const filepath = path.join(TMP_DIR, filename);
+//         await fs.writeFile(filepath, media.data, 'base64');
+//         appendLog(groupId, `语音已保存: ${filepath}`);
+//         query = await audioToText(filepath, user);
+//         appendLog(groupId, `语音转文字结果: ${query}`);
+//         await fs.remove(filepath);
+//         appendLog(groupId, `临时语音文件已删除: ${filepath}`);
+//       }
+//     } else {
+//       query = '[暂不支持的消息类型]';
+//       appendLog(groupId, `收到暂不支持的消息类型: ${msg.type}`);
+//     }
+
+//     // —— 可选：记录收到的 WhatsApp 消息 ——
+//     if (LOG_WHATSAPP_MSGS) {
+//       const logEntry = `[${new Date().toISOString()}] ${msg.from} (${msg.type}): ${msg.body || ''}\n`;
+//       await fs.appendFile(LOG_FILE, logEntry);
+//       appendLog(groupId, '消息已写入日志文件');
+//     }
+
+//     if (!query) {
+//       if (!isGroup || shouldReply(msg, BOT_NAME)) {
+//         await msg.reply('未识别到有效内容。');
+//         appendLog(groupId, '未识别到有效内容，已回复用户');
+//       }
+//       return;
+//     }
+
+//     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
+//     const needReply = isGroup && shouldReply(msg, BOT_NAME);
+//     appendLog(groupId, `是否需要AI回复: ${needReply}`);
+
+//     // —— 调用 Dify，拿到原始 SSE 日志文本 ——
+//     // 无论是否需要AI回复，都上传Dify，可用于埋点或业务分析
+//     let difyLogString = '';
+//     try {
+//       query = `${query} [group_id:${groupId}]`;
+//       appendLog(groupId, `开始调用Dify，query: ${query}, files: ${JSON.stringify(files)}`);
+//       difyLogString = await sendToDify({ query, user, files });
+//       appendLog(groupId, 'Dify 调用完成');
+//     } catch (e) {
+//       appendLog(groupId, `Dify 调用失败: ${e.message}`);
+//       if (needReply) await msg.reply('调用 Dify 失败，请稍后再试。');
+//       return;
+//     }
+
+//     appendLog(groupId, `Dify 原始返回：${difyLogString}`);
+
+//     // —— 解析并回复 ——
+//     let replyStr;
+//     try {
+//       appendLog(groupId, '开始解析Dify响应');
+//       replyStr = extractAgentAnswer(difyLogString);
+//       if (typeof replyStr !== 'string') {
+//         replyStr = String(replyStr);
+//       }
+//       appendLog(groupId, `Final agent answer: ${replyStr}`);
+//       if (!needReply && !replyStr.includes('缺少')) {
+//         // 群聊未触发关键词，不回复，仅上传
+//         appendLog(groupId, '群聊未触发关键词，不回复，仅上传Dify');
+//         return;
+//       }
+//       try {
+//         appendLog(groupId, `尝试回复用户: ${replyStr}`);
+//         await msg.reply(replyStr);
+//         appendLog(groupId, '已回复用户');
+//       } catch (e) {
+//         appendLog(groupId, `回复用户失败: ${e.message}`);
+//       }
+//     } catch (err) {
+//       appendLog(groupId, `处理 Dify 回复失败：${err.message}`);
+//       replyStr = `处理失败：${err.message}`;
+//       try {
+//         await msg.reply(replyStr);
+//         appendLog(groupId, '已回复用户');
+//       } catch (e) {
+//         appendLog(groupId, `回复用户失败: ${e.message}`);
+//       }
+//     }
+
+//   } catch (err) {
+//     appendLog(msg.from, `处理消息出错: ${err.message}`);
+//     try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
+//     appendLog(msg.from, '处理消息时发生异常');
+//   }
+// });
 
 client.initialize();
 
@@ -794,7 +973,7 @@ async function sendToFastGPT({ query, user, apikey }) {
   throw lastErr;
 }
 
-// — 发送消息到 Dify，返回原始 SSE 文本 — 
+// — 发送消息到 Dify，返回原始 SSE 文本 —
 async function sendToDify({ query, user, files = [], response_mode = 'streaming', inputs = {} }) {
   const now = new Date().toLocaleString('zh-CN', { hour12: false });
   const uniqueQuery = `${query} @${now}`;
@@ -842,7 +1021,7 @@ async function getSummary(group_id) {
     }
   });
   const data = resp.data;
-  const summary = formatSummary(data, group_id); 
+  const summary = formatSummary(data, group_id);
   await client.sendMessage(group_id, summary); // 主动发到群聊
 }
 
@@ -853,7 +1032,7 @@ async function getOTSummary(group_id) {
     }
   });
   const data = resp.data;
-  const summary = formatOTSummary(data); 
+  const summary = formatOTSummary(data);
   await client.sendMessage(group_id, summary); // 主动发到群聊
 }
 
@@ -863,12 +1042,16 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
+    getSummary(GROUP_ID_4);
+    getSummary(GROUP_ID_7);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -877,11 +1060,15 @@ async function sendOTSummary() {
   try {
     getOTSummary(GROUP_ID_2);
     getOTSummary(GROUP_ID_3);
+    getOTSummary(GROUP_ID_4);
+    getOTSummary(GROUP_ID_7);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
   }
 }
 

@@ -51,6 +51,7 @@ FIELDS = [
 def get_conn():
     return connect(**DB_CONFIG)
 
+
 def execute_query(sql, params=(), fetch=False, many=False):
     conn = get_conn()
     try:
@@ -63,6 +64,7 @@ def execute_query(sql, params=(), fetch=False, many=False):
     finally:
         conn.close()
 
+
 def normalize_date(value):
     try:
         dt = date_parser.parse(value)
@@ -70,10 +72,12 @@ def normalize_date(value):
     except:
         return None
 
+
 # --- Routes ---
 @app.route('/')
 def index():
     return "API is running."
+
 
 @app.route("/records", methods=["POST"])
 def create_record():
@@ -94,16 +98,19 @@ def create_record():
         return jsonify(res), 200
     return jsonify(res), 201
 
+
 from datetime import datetime
 import pytz
 import uuid
 from dateutil.parser import parse as date_parser
+
 
 def generate_gmt_cst_time():
     """生成当前北京时间，格式为 Fri, 10 Oct 2025 11:03:13 GMT"""
     cst_tz = pytz.timezone("Asia/Shanghai")
     cst_time = datetime.now(cst_tz)
     return cst_time.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
 
 def normalize_date(value):
     """解析 GMT 格式时间并返回 YYYY-MM-DD"""
@@ -114,11 +121,13 @@ def normalize_date(value):
     except ValueError:
         return None
 
+
 def clean_string(value):
     """移除字符串中的所有空格（包括中间空格）"""
     if isinstance(value, str):
         return re.sub(r'\s+', '', value)
     return value
+
 
 def insert_one_record(data):
     """
@@ -272,6 +281,7 @@ def insert_one_record(data):
             return {"error": "插入失败", "detail": str(e)}
         return {"status": "ok", "inserted_id": record["id"]}
 
+
 # --- 外墙棚架 校验字段 ---
 def validate_process(data):
     """校验工序字段"""
@@ -281,6 +291,7 @@ def validate_process(data):
     if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (
             not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
         return {"error": f"工序無效，應為 {', '.join(EXTERNAL_SCAFFOLDING_VALID_PROCESSES)} 的組合"}
+
 
 def validate_time_range(data):
     """校验时间范围格式"""
@@ -322,6 +333,7 @@ def get_record(record_id):
     rows = execute_query(sql, (record_id,), fetch=True)
     return jsonify(rows[0]) if rows else (jsonify({"error": "未找到该记录"}), 404)
 
+
 def normalize_date(dt_str: str) -> Optional[str]:
     """
     支持多种输入格式：
@@ -341,6 +353,7 @@ def normalize_date(dt_str: str) -> Optional[str]:
         except Exception:
             continue
     return None
+
 
 @app.route("/records", methods=["GET"])
 def list_records():
@@ -382,6 +395,7 @@ def get_today_records():
     where = f"WHERE {' AND '.join(conditions)}"
     sql = f"SELECT * FROM `{TABLE_NAME}` {where} ORDER BY `id`"
     return jsonify(execute_query(sql, tuple(params), fetch=True))
+
 
 @app.route("/records/update_by_condition", methods=["PUT"])
 def update_by_condition():
@@ -629,6 +643,7 @@ def update_record(record_id):
         return jsonify({"error": "未找到该记录"}), 404
     return jsonify({"status": "ok", "updated_id": record_id})
 
+
 @app.route("/records", methods=["DELETE"])
 def delete_records():
     filters = request.get_json(silent=True) or request.args.to_dict()
@@ -656,6 +671,7 @@ def delete_records():
     if deleted == 0:
         return jsonify({"error": f"未找到匹配的记录"}), 404
     return jsonify({"status": "ok", "deleted_count": deleted})
+
 
 @app.route("/delete_fastgpt_records", methods=["POST"])
 def delete_fastgpt_records():
@@ -715,6 +731,7 @@ def delete_fastgpt_records():
 
     return jsonify({"status": "ok", "deleted_count": deleted})
 
+
 @app.route("/columns", methods=["GET"])
 def show_columns():
     table = request.args.get("table")
@@ -723,6 +740,7 @@ def show_columns():
     sql = f"SHOW COLUMNS FROM `{table}`"
     rows = execute_query(sql, fetch=True)
     return jsonify({"columns": [row["Field"] for row in rows]})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
