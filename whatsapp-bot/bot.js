@@ -531,26 +531,11 @@ client.on('message', async msg => {
         console.log(`图片已保存: ${filepath}`);
         appendLog(groupId, `图片已保存: ${filepath}`);
 
-        // 上传到 Dify
-        // // const file_id = await uploadFileToDify(filepath, user, 'image');
-        // console.log(`图片已上传到Dify，file_id: ${file_id}`);
-        // appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
-        // files.push({
-        //   type: 'image',
-        //   transfer_method: 'local_file',
-        //   upload_file_id: file_id
-        // });
-
         // 支持图文混合：读取 caption 或 body
         const caption = msg.caption || msg.body || '';
         query = caption ? `[图片] ${caption}` : '[图片]';
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
-
-        // 删除临时文件
-        // await fs.remove(filepath);
-        // console.log(`临时图片文件已删除: ${filepath}`);
-        // appendLog(groupId, `临时图片文件已删除: ${filepath}`);
       }
     } else if (['ptt', 'audio'].includes(msg.type)) {
       const media = await msg.downloadMedia();
@@ -596,21 +581,6 @@ client.on('message', async msg => {
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
-    // —— 调用 FastGPT，拿到返回的 JSON 数据 —— 临时注释掉有幻觉的agent调用，直接调用工作流
-    // let replyStr;
-    // try {
-    //   query = `${query} [group_id:${groupId}]`;
-    //   console.log(`开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-    //   appendLog(groupId, `开始调用FastGPT，query: ${query}, files: ${JSON.stringify(files)}`);
-    //   replyStr = await sendToFastGPT({ query, user, msg });
-    //   console.log(`FastGPT response content: ${replyStr}`);
-    //   appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
-    // } catch (e) {
-    //   console.log(`FastGPT 调用失败: ${e.message}`);
-    //   appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-    //   if (needReply) await msg.reply('调用 FastGPT 失败，请稍后再试。');
-    //   return;
-    // }
     // API key 常量，命名清晰且具可讀性
     const API_KEYS = {
       EPERMIT_UPDATE: 'fastgpt-j3A7GuAA7imPLdKBdt1YSE92nRlYTVIfrn43XoJAcz0sq81jUtZyEpTvPZYFBk0Ow',
@@ -709,165 +679,7 @@ client.on('message', async msg => {
     appendLog(msg.from, '处理消息时发生异常');
   }
 });
-// client.on('message', async msg => {
-//   try {
-//     const user = msg.from;
-//     let query = '';
-//     let files = [];
 
-//     // 判断是否群聊
-//     const chat = await msg.getChat();
-//     const isGroup = chat.isGroup;
-//     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}`);
-//     if (!isGroup) {
-//       appendLog(user, '不是群聊消息，不回复用户');
-//       return;
-//     }
-//     // 在发送到API前，记录 group_id
-//     const groupId = msg.from; // 这就是 WhatsApp 的群ID
-//     appendLog(groupId, msg.body);
-
-//     // —— 处理不同类型的 WhatsApp 消息 ——
-//     if (msg.type === 'chat') {
-//       query = msg.body.trim();
-//       appendLog(groupId, `文本消息内容: ${query}`);
-//       // 如果用户输入包含「总结」等关键词，直接调用接口并返回结果
-//       if (containsSummaryKeyword(query)) {
-//         try {
-//           const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
-//             params: {
-//               group_id: groupId // 替换为实际的群组ID
-//             }
-//           });
-//           // 假定接口返回的是一个 JSON 数组
-//           const data = resp.data;
-//           const summary = formatSummary(data);
-//           await msg.reply(summary);
-//         } catch (err) {
-//           appendLog(groupId, `调用 records/today 失败：${err.message}`);
-//           await msg.reply('获取今日记录失败，请稍后重试。');
-//         }
-//         return;  // 拦截后不再往下走 Dify 流程
-//       }
-//     } else if (msg.type === 'image') {
-//       // 图片（可能带有文字 caption）
-//       const media = await msg.downloadMedia();
-//       if (media) {
-//         const ext = mime.extension(media.mimetype) || 'jpg';
-//         const filename = `img_${Date.now()}.${ext}`;
-//         const filepath = path.join(TMP_DIR, filename);
-//         await fs.writeFile(filepath, media.data, 'base64');
-//         appendLog(groupId, `图片已保存: ${filepath}`);
-
-//         // 上传到 Dify
-//         const file_id = await uploadFileToDify(filepath, user, 'image');
-//         appendLog(groupId, `图片已上传到Dify，file_id: ${file_id}`);
-//         files.push({
-//           type: 'image',
-//           transfer_method: 'local_file',
-//           upload_file_id: file_id
-//         });
-
-//         // 支持图文混合：读取 caption 或 body
-//         const caption = msg.caption || msg.body || '';
-//         query = caption ? `[图片] ${caption}` : '[图片]';
-//         appendLog(groupId, `图文消息内容: ${query}`);
-
-//         // 删除临时文件
-//         await fs.remove(filepath);
-//         appendLog(groupId, `临时图片文件已删除: ${filepath}`);
-//       }
-//     } else if (['ptt', 'audio'].includes(msg.type)) {
-//       const media = await msg.downloadMedia();
-//       if (media) {
-//         const ext = mime.extension(media.mimetype) || 'ogg';
-//         const filename = `audio_${Date.now()}.${ext}`;
-//         const filepath = path.join(TMP_DIR, filename);
-//         await fs.writeFile(filepath, media.data, 'base64');
-//         appendLog(groupId, `语音已保存: ${filepath}`);
-//         query = await audioToText(filepath, user);
-//         appendLog(groupId, `语音转文字结果: ${query}`);
-//         await fs.remove(filepath);
-//         appendLog(groupId, `临时语音文件已删除: ${filepath}`);
-//       }
-//     } else {
-//       query = '[暂不支持的消息类型]';
-//       appendLog(groupId, `收到暂不支持的消息类型: ${msg.type}`);
-//     }
-
-//     // —— 可选：记录收到的 WhatsApp 消息 ——
-//     if (LOG_WHATSAPP_MSGS) {
-//       const logEntry = `[${new Date().toISOString()}] ${msg.from} (${msg.type}): ${msg.body || ''}\n`;
-//       await fs.appendFile(LOG_FILE, logEntry);
-//       appendLog(groupId, '消息已写入日志文件');
-//     }
-
-//     if (!query) {
-//       if (!isGroup || shouldReply(msg, BOT_NAME)) {
-//         await msg.reply('未识别到有效内容。');
-//         appendLog(groupId, '未识别到有效内容，已回复用户');
-//       }
-//       return;
-//     }
-
-//     // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
-//     const needReply = isGroup && shouldReply(msg, BOT_NAME);
-//     appendLog(groupId, `是否需要AI回复: ${needReply}`);
-
-//     // —— 调用 Dify，拿到原始 SSE 日志文本 ——
-//     // 无论是否需要AI回复，都上传Dify，可用于埋点或业务分析
-//     let difyLogString = '';
-//     try {
-//       query = `${query} [group_id:${groupId}]`;
-//       appendLog(groupId, `开始调用Dify，query: ${query}, files: ${JSON.stringify(files)}`);
-//       difyLogString = await sendToDify({ query, user, files });
-//       appendLog(groupId, 'Dify 调用完成');
-//     } catch (e) {
-//       appendLog(groupId, `Dify 调用失败: ${e.message}`);
-//       if (needReply) await msg.reply('调用 Dify 失败，请稍后再试。');
-//       return;
-//     }
-
-//     appendLog(groupId, `Dify 原始返回：${difyLogString}`);
-
-//     // —— 解析并回复 ——
-//     let replyStr;
-//     try {
-//       appendLog(groupId, '开始解析Dify响应');
-//       replyStr = extractAgentAnswer(difyLogString);
-//       if (typeof replyStr !== 'string') {
-//         replyStr = String(replyStr);
-//       }
-//       appendLog(groupId, `Final agent answer: ${replyStr}`);
-//       if (!needReply && !replyStr.includes('缺少')) {
-//         // 群聊未触发关键词，不回复，仅上传
-//         appendLog(groupId, '群聊未触发关键词，不回复，仅上传Dify');
-//         return;
-//       }
-//       try {
-//         appendLog(groupId, `尝试回复用户: ${replyStr}`);
-//         await msg.reply(replyStr);
-//         appendLog(groupId, '已回复用户');
-//       } catch (e) {
-//         appendLog(groupId, `回复用户失败: ${e.message}`);
-//       }
-//     } catch (err) {
-//       appendLog(groupId, `处理 Dify 回复失败：${err.message}`);
-//       replyStr = `处理失败：${err.message}`;
-//       try {
-//         await msg.reply(replyStr);
-//         appendLog(groupId, '已回复用户');
-//       } catch (e) {
-//         appendLog(groupId, `回复用户失败: ${e.message}`);
-//       }
-//     }
-
-//   } catch (err) {
-//     appendLog(msg.from, `处理消息出错: ${err.message}`);
-//     try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch {}
-//     appendLog(msg.from, '处理消息时发生异常');
-//   }
-// });
 
 client.initialize();
 
