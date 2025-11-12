@@ -247,47 +247,59 @@ function formatSummary(data, groupId = 'default') {
   );
 }
 
+// 公共函数：解析 update_history
+function parseUpdateHistory(update_history) {
+  let history = [];
+  try {
+    if (typeof update_history === 'string' && update_history.trim() !== '') {
+      history = JSON.parse(update_history);
+      if (!Array.isArray(history)) {
+        history = [];
+      }
+    } else if (Array.isArray(update_history)) {
+      history = update_history;
+    }
+  } catch (e) {
+    console.warn(`处理update_history失败: ${e.message}`);
+    history = [];
+  }
+  return history;
+}
+
+// 公共函数：生成 safetyStatus
+function generateSafetyStatus(updateHistory, timeSegments, groupId, isExternal = false) {
+  return timeSegments.map(segment => {
+    const hasTimeInSegment = updateHistory.some(timestamp => {
+      try {
+        return parseTimeSegment(timestamp, groupId) === segment.name;
+      } catch (e) {
+        return false;
+      }
+    });
+
+    if (isExternal) {
+      const now = new Date();
+      const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
+      return hasTimeInSegment
+        ? `${segment.name}⭕`
+        : (nowMinutes < segment.end ? `${segment.name}` : `${segment.name}❌`);
+    } else {
+      return `${segment.name} ${hasTimeInSegment ? '✅' : '❎'}`;
+    }
+  }).join('，');
+}
+
 // 生成Summary详情方法（普通群组）
 function generateSummaryDetails(data, formatConfig, groupId) {
   const details = data.map((rec, i) => {
-    let updateHistory = [];
-    try {
-      if (typeof rec.update_history === 'string' && rec.update_history.trim() !== '') {
-        try {
-          updateHistory = JSON.parse(rec.update_history);
-          // 确保解析结果是数组
-          if (!Array.isArray(updateHistory)) {
-            updateHistory = [];
-          }
-        } catch (jsonError) {
-          console.warn(`解析update_history失败: ${jsonError.message}`);
-          updateHistory = [];
-        }
-      } else if (Array.isArray(rec.update_history)) {
-        updateHistory = rec.update_history;
-      }
-    } catch (e) {
-      console.error(`处理update_history时出错: ${e.message}`);
-      updateHistory = [];
-    }
+    const updateHistory = parseUpdateHistory(rec.update_history);
 
     const fields = {
       location: rec.location || '',
       subcontractor: rec.subcontrator || rec.subcontractor || '',
       number: rec.number || '',
       floor: rec.floor || '',
-      safetyStatus: formatConfig.timeSegments.map(segment => {
-        // 检查是否有任何时间戳落在当前时间段内
-        const hasTimeInSegment = updateHistory.some(timestamp => {
-          try {
-            return parseTimeSegment(timestamp, groupId) === segment.name;
-          } catch (e) {
-            return false;
-          }
-        });
-
-        return `${segment.name} ${hasTimeInSegment ? '✅' : '❎'}`;
-      }).join('，'),
+      safetyStatus: generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId),
       xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
     };
     console.log('update_history:', updateHistory);
@@ -311,67 +323,47 @@ function generateSummaryDetails(data, formatConfig, groupId) {
 
 // 生成Summary详情方法（外墙群组）
 function generateExternalSummaryDetails(data, formatConfig, groupId) {
-    // 外墙群组：按 building 分组
-    const byBuilding = data.reduce((acc, rec) => {
-      const building = rec.building || '未知';
-      if (!acc[building]) acc[building] = [];
-      acc[building].push(rec);
-      return acc;
-    }, {});
+  // 外墙群组：按 building 分组
+  const byBuilding = data.reduce((acc, rec) => {
+    const building = rec.building || '未知';
+    if (!acc[building]) acc[building] = [];
+    acc[building].push(rec);
+    return acc;
+  }, {});
 
-    const details = Object.keys(byBuilding).sort().map(building => {
-      const records = byBuilding[building];
+  const details = Object.keys(byBuilding).sort().map(building => {
+    const records = byBuilding[building];
 
-      // 按ID排序
-      const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
-      // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
-      const buildingLetter = building === '未知' ? '' : building.replace('座', '');
+    // 按ID排序
+    const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
+    // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
+    const buildingLetter = building === '未知' ? '' : building.replace('座', '');
 
-      const buildingDetails = sortedRecords.map((rec, index) => {
-        let updateHistory = [];
-        try {
-          if (typeof rec.update_history === 'string' && rec.update_history.trim()) {
-            updateHistory = JSON.parse(rec.update_history);
-            if (!Array.isArray(updateHistory)) updateHistory = [];
-          } else if (Array.isArray(rec.update_history)) {
-            updateHistory = rec.update_history;
-          }
-        } catch (e) {
-          console.warn(`处理update_history失败: ${e.message}`);
-          updateHistory = [];
-        }
+    const buildingDetails = sortedRecords.map((rec, index) => {
+      const updateHistory = parseUpdateHistory(rec.update_history);
 
-        // 生成前缀（A01-, A02-, B01-, B02- 等）
-        const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+      // 生成前缀（A01-, A02-, B01-, B02- 等）
+      const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
 
-        const fields = {
-          location: `${prefix}${rec.location || ''}`,
-          floor: rec.floor || '',
-          subcontractor: rec.subcontractor || '',
-          number: rec.number || 0,
-          process: rec.process || '',
-          time_range: rec.time_range || '',
-          safetyStatus: formatConfig.timeSegments.map(segment => {
-            const hasTimeInSegment = updateHistory.some(timestamp => parseTimeSegment(timestamp, groupId) === segment.name);
+      const fields = {
+        location: `${prefix}${rec.location || ''}`,
+        floor: rec.floor || '',
+        subcontractor: rec.subcontractor || '',
+        number: rec.number || 0,
+        process: rec.process || '',
+        time_range: rec.time_range || '',
+        safetyStatus: generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true),
+        xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
+      };
 
-            const now = new Date();
-            const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
-
-            return hasTimeInSegment
-            ? `${segment.name}⭕`
-            : (nowMinutes < segment.end ? `${segment.name}` : `${segment.name}❌`);
-          }).join('，'),
-          xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
-        };
-
-        const recordLine = `${fields.location}，${fields.floor}，${fields.subcontractor}，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
-        const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
-        return `${recordLine}\n${safetyLine}`;
-      });
-      return `${building}\n${buildingDetails.join('\n')}`;
+      const recordLine = `${fields.location}，${fields.floor}，${fields.subcontractor}，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
+      const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
+      return `${recordLine}\n${safetyLine}`;
     });
+    return `${building}\n${buildingDetails.join('\n')}`;
+  });
 
-    return details;
+  return details;
 }
 
 function ensureDir(dir) {
