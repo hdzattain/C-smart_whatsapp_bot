@@ -18,6 +18,11 @@ EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363162893788546@g.us'
 ]
 
+# --- 打孔群组定义 ---
+DRILL_GROUPS = [
+    'xxxxxxxxxxxxxxxx@g.us'
+]
+
 EXTERNAL_SCAFFOLDING_PROCESSES = [
     "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線",
     "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水", "清竹棚",
@@ -139,7 +144,10 @@ def insert_one_record(data):
     """
     # 校验必填字段
     is_scaffold_group = data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    is_drill_group = data.get("group_id") in DRILL_GROUPS
     required = ["location", "subcontractor", "number", "floor"]
+    if is_drill_group:
+        del required[required.index("floor")]
     if is_scaffold_group:
         required.extend(["process"])
 
