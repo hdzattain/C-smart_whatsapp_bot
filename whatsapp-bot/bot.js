@@ -599,7 +599,7 @@ client.on('message', async msg => {
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
         },
         {
-          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣带|返回室内/.test(query),
+          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣带|返回室内|食飯/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
