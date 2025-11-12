@@ -294,7 +294,7 @@ const drill_conditions = [
 // ============================
 // 4. 主逻辑调用
 // ============================
-async function processDrillMessage(query, msg, groupId) {
+async function processDrillingQuery(query, msg, groupId) {
   for (const { test, action } of drill_conditions) {
     if (test(query)) {
       return await action(query, msg, groupId); // 匹配即终止
