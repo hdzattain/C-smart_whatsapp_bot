@@ -180,7 +180,7 @@ const DRILL_TEMPLATES = {
 // 1. 申请开工
 async function handleApply(query, msg, groupId) {
   const applyMatch = query.match(
-    /2️⃣開工內容.*?日期:\s*(\d{4}\/\d{2}\/\d{2})\s*位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)/s
+    /2️⃣開工內容.*?日期:\s*([^\n]+)\s*位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)/s
   );
   if (!applyMatch) {
     return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.apply;
@@ -230,8 +230,7 @@ async function handleSafety(query, msg, groupId) {
       group_id: groupId,
     },
     set: {
-      part_leave_number: 2,
-      afternoon: 1
+      safety_flag: 1
     },
   };
   let replyStr;
@@ -256,6 +255,37 @@ async function handleLeave(query, msg, groupId) {
   }
   const [_full, location, process, subcontractor] = leaveMatch;
   const data = {
+    where: {
+      subcontractor: subcontractor.trim(),
+      process: process.trim(),
+      group_id: groupId,
+    },
+    set: {
+      xiaban: 1
+    },
+  };
+  let replyStr;
+  try {
+    await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    replyStr = '安全相更新成功';
+  } catch (e) {
+    replyStr = '更新失败，请重试';
+  }
+  return replyStr;
+}
+
+// 4. 删除
+async function handleDelete(query, msg, groupId) {
+  const leaveMatch = query.match(
+    /位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)\s*/s
+  );
+  if (!leaveMatch) {
+    return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.leave;
+  }
+  const [_full, location, process, subcontractor] = leaveMatch;
+  const data = {
     location: location.trim(),
     process: process.trim(),
     subcontrator: subcontractor.trim(), // 注意：原代码拼写为 subcontrator
@@ -266,9 +296,9 @@ async function handleLeave(query, msg, groupId) {
     await axios.post('http://llm-ai.c-smart.hk/delete_fastgpt_records', data, {
       headers: { 'Content-Type': 'application/json' },
     });
-    replyStr = '撤离成功';
+    replyStr = '删除成功';
   } catch (e) {
-    replyStr = '撤离失败，请重试';
+    replyStr = '删除失败，请重试';
   }
   return replyStr;
 }
@@ -288,6 +318,10 @@ const drill_conditions = [
   {
     test: query => /撤離|撤离/.test(query),
     action: (query, msg, groupId) => handleLeave(query, msg, groupId),
+  },
+  {
+    test: query => /删除|刪/.test(query),
+    action: (query, msg, groupId) => handleDelete(query, msg, groupId),
   },
 ];
 
