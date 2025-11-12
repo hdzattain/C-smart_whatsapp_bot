@@ -1080,6 +1080,54 @@ async function handleInspBot(msg, groupId, needReply) {
     await replyMessage(msg, 'InspBot 处理失败，请稍后再试。', needReply);
   }
 }
+async function handleQuotedReply(msg, groupId, senderId, body) {
+  try {
+    const isOwnerOrCreator = (task, uid) =>
+    (task.creator === uid) || (Array.isArray(task.owners) && task.owners.includes(uid));
+
+    const isAutoDone = (text) => /(完成|已处理|已解決|已解决|done)\b/i.test(text || '');
+    const quoted = await msg.getQuotedMessage();
+    const qid = quoted?.id?._serialized || '';
+    if (!qid) return false;
+
+    let task = tasksStore[groupId].find(t => t.messageId === qid);
+    if (!task) {
+      const quotedBody = (quoted.body || '').trim();
+      const taskIdMatch = quotedBody.match(/\*T\d{6,}\*/);
+      if (taskIdMatch) {
+        const taskId = taskIdMatch[0].replace(/\*/g, '');
+        task = tasksStore[groupId].find(t => t.id === taskId);
+      }
+    }
+
+    if (!task || !isOwnerOrCreator(task, senderId)) return false;
+
+    const added = addProgress(task, body, senderId, msg.id?._serialized);
+    
+    if (isAutoDone(body)) {
+      if (task.status === 'done') {
+        await msg.reply(`任务 *${task.id}* 已是完成状态。`);
+        return true;
+      }
+      task.status = 'done';
+      task.history.push({ at: new Date().toISOString(), by: senderId, action: 'auto-done' });
+      saveTasks();
+      await msg.reply(`✅ 任务 *${task.id}* 已更新为【已完成】`);
+      return true;
+    }
+    
+    if (added) {
+      saveTasks();
+      await msg.reply(`📝 已记录 *${task.id}* 的最新进展。`);
+      return true;
+    }
+
+    return false;
+  } catch (e) {
+    console.error('[SummaryBot] handleQuotedReply error:', e);
+    return false;
+  }
+}
 
 async function handleSummaryBot(msg, groupId) {
   const chat = await msg.getChat();
@@ -1808,6 +1856,5 @@ function shouldReply(msg, botName) {
 async function audioToText(filepath, user) {
   return '语音转文字结果（占位）';
 }
-
 
 
