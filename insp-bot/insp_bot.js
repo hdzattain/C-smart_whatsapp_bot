@@ -30,6 +30,8 @@ const LOG_DIR = path.join(__dirname, 'logs');
 const TMP_DIR = path.join(__dirname, 'tmp');
 const GROUP_CONFIG_FILE = path.join(__dirname, 'group_config.json');
 const SUBSCRIPTIONS_FILE = path.join(__dirname, 'subscriptions.json');
+// 定义 JSON 文件路径（与 insp_bot.js 同文件夹）
+const LID_MAP_FILE = path.join(__dirname, 'lid2number.json');
 // === SummaryBot 任务存储 ===
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
 // 结构：{ [groupId]: Array<Task> }，Task 见下方 handleSummaryBot 注释
@@ -1433,8 +1435,8 @@ async function handlePlanBot(msg, groupId, isGroup) {
     // 引用消息处理
     const quoted = await msg.getQuotedMessage();
     const qid = quoted?.id?._serialized || '';
-    const quotedMsg = await parseMessageMentionsNumber(quoted, (quoted.body || '').trim());
     if (qid) {
+      const quotedMsg = await parseMessageMentionsNumber(quoted, (quoted.body || '').trim());
       query += ` 引用消息: ${quotedMsg}`;
     }
 
@@ -1606,6 +1608,34 @@ async function parseMessageMentions(msg, body = '') {
   return result;
 }
 
+// 加载 LID 到号码的映射（如果文件不存在，返回空对象）
+function loadLidMap() {
+  if (fs.existsSync(LID_MAP_FILE)) {
+    try {
+      const data = fs.readFileSync(LID_MAP_FILE, 'utf8');
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('加载 lid2number.json 失败:', e.message);
+      return {};
+    }
+  }
+  return {};
+}
+
+// 保存 LID 到号码的映射（追加或更新）
+function saveLidMap(lid, number) {
+  const lidMap = loadLidMap();
+  if (lid && number) {
+    lidMap[lid] = number;
+    try {
+      fs.writeFileSync(LID_MAP_FILE, JSON.stringify(lidMap, null, 2), 'utf8');
+      console.log(`保存 LID: ${lid} -> ${number}`);
+    } catch (e) {
+      console.error('保存 lid2number.json 失败:', e.message);
+    }
+  }
+}
+
 // 解析消息中的 @ 标签，合法 WhatsApp ID 转换为纯数字，不合法保持原样
 async function parseMessageMentionsNumber(msg, body = '') {
   // 安全检查
@@ -1615,10 +1645,44 @@ async function parseMessageMentionsNumber(msg, body = '') {
   }
 
   // 获取提到的用户列表
-  const mentions = await msg.getMentions();
-  if (!mentions || mentions.length === 0) {
-    console.log('[DEBUG] 没有找到 mentions');
-    return body;
+  let mentions = [];
+  try {
+    mentions = await msg.getMentions();
+  } catch (e) {
+    console.error('[ERR] 获取 mentions 失败:', e.message);
+    console.log('[DEBUG] 没有找到 mentions，使用 JSON 文件映射进行替换');
+    const lidMap = loadLidMap();
+    const mentionRegex = /@(\d+)/g;
+    let result = body;
+    result = result.replace(mentionRegex, (match, lid) => {
+      const number = lidMap[lid];
+      if (number) {
+        console.log(`[DEBUG] 从 JSON 替换: ${match} -> @${number}`);
+        return `@${number}`;
+      } else {
+        console.log(`[DEBUG] 未找到 LID: ${lid} 的映射，保持原样`);
+        return match;
+      }
+    });
+    return result;
+  }
+
+  if (mentions.length === 0) {
+    console.log('[DEBUG] 没有找到 mentions，使用 JSON 文件映射进行替换');
+    const lidMap = loadLidMap();
+    const mentionRegex = /@(\d+)/g;
+    let result = body;
+    result = result.replace(mentionRegex, (match, lid) => {
+      const number = lidMap[lid];
+      if (number) {
+        console.log(`[DEBUG] 从 JSON 替换: ${match} -> @${number}`);
+        return `@${number}`;
+      } else {
+        console.log(`[DEBUG] 未找到 LID: ${lid} 的映射，保持原样`);
+        return match;
+      }
+    });
+    return result;
   }
 
   // 调试 mentions 数据
@@ -1637,6 +1701,7 @@ async function parseMessageMentionsNumber(msg, body = '') {
     console.log(`[DEBUG] 处理匹配: ${match}, ID: ${id}, 索引: ${mentionIndex}`);
     if (mentionIndex < numbers.length) {
       const replacement = `@${numbers[mentionIndex]}`;
+      saveLidMap(id, numbers[mentionIndex]);
       console.log(`[DEBUG] 替换: ${match} -> ${replacement}`);
       mentionIndex++;
       return replacement;
