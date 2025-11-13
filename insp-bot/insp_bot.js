@@ -1430,13 +1430,16 @@ async function handlePlanBot(msg, groupId, isGroup) {
     console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
 
     query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
+    // 引用消息处理
     const quoted = await msg.getQuotedMessage();
     const qid = quoted?.id?._serialized || '';
+    const quotedMsg = await parseMessageMentionsNumber(quoted, (quoted.body || '').trim());
     if (qid) {
-      query += ` 引用消息ID: ${qid} 引用消息: ${quoted.body || ''}`;
+      query += ` 引用消息: ${quotedMsg}`;
     }
 
     query = await parseMessageMentionsNumber(msg, query);
+    query += await parseMessageMentionsNumber(quoted, quoted.body);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
     const isImage = msg.type === 'image' || msg.type === 'album';
     if (!query) {
