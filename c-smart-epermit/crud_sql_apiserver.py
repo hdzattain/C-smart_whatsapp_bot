@@ -155,7 +155,7 @@ def insert_one_record(data):
         missing_names = [name_dict[k] for k in missing_keys]
         if is_scaffold_group:
             return {
-                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請A03-BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
+                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
         else:
             return {
                 "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
@@ -414,6 +414,11 @@ def update_by_condition():
     print("after time added updates:", updates)
     print("FIELDS:", FIELDS)
 
+    # 校验外墙棚架群组在更新时的必填字段
+    error_response = validate_scaffold_group_fields(filters)
+    if error_response:
+        return error_response
+
     # location, building, floor 不区分大小写，不记入string_fields中
     string_fields = {"subcontractor", "group_id"}
     if filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS:
@@ -513,6 +518,51 @@ def update_by_condition():
     except Exception as e:
         print("Query error:", str(e))
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
+
+
+def validate_scaffold_group_fields(filters):
+    """
+    校验外墙棚架群组的必填字段
+
+    Args:
+        filters (dict): 过滤条件字典
+
+    Returns:
+        dict or None: 如果校验失败返回错误信息字典，否则返回None
+    """
+    # 外墙棚架群组校验必填字段
+    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    required = ["subcontractor", "number", "process"]
+
+    name_dict = {
+        "subcontractor": "分判",
+        "number": "人數",
+        "process": "工序"
+    }
+
+    if is_scaffold_group:
+        # 检查缺失字段
+        missing_keys = [k for k in required if not filters.get(k)]
+        if missing_keys:
+            missing_names = [name_dict[k] for k in missing_keys]
+            return {
+                "error": f"缺少字段: {', '.join(missing_names)}，更新安全相、撤离时，请输入必填字段：[分判商][人数][工序]"
+            }
+
+        # 校验number字段值必须大于0
+        if "number" in filters:
+            try:
+                number_value = int(filters.get("number", 0))
+                if number_value <= 0:
+                    return {
+                        "error": "缺少字段: 人數，必須大於0，更新安全相、撤离时，请输入有效人数"
+                    }
+            except (ValueError, TypeError):
+                return {
+                    "error": "人數必須為有效數字，更新安全相、撤离时，请输入有效人数"
+                }
+
+    return None
 
 
 # 新增工人
