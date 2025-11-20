@@ -10,7 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const cron = require('node-cron');
 const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
-const { processScaffoldingQuery } = require('scaffolding_process');
+const { processScaffoldingQuery } = require('./scaffolding_process');
 
 // client对象（假定已全局初始化）
 const GROUP_ID = '120363418441024423@g.us'; // PTW LiftShaft TEST
