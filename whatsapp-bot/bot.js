@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const cron = require('node-cron');
 const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
+const { processScaffoldingQuery } = require('scaffolding_process');
 
 // client对象（假定已全局初始化）
 const GROUP_ID = '120363418441024423@g.us'; // PTW LiftShaft TEST
@@ -23,9 +24,7 @@ const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
     GROUP_ID_2,
-    GROUP_ID_4,
-    GROUP_ID_5,
-    GROUP_ID_6
+    GROUP_ID_4
 ]
 
 // 完全静默群组配置
@@ -635,7 +634,13 @@ client.on('message', async msg => {
     try {
       console.log(`開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
       appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
-      replyStr = await processQuery(query, groupId, user);
+      if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
+        // —— 棚架群组专用逻辑 ——
+        replyStr = await processScaffoldingQuery(query, groupId);
+      } else {
+        // —— 其他群组走原有流程 ——
+        replyStr = await processQuery(query, groupId, user);
+      }
       if (replyStr === null) {
         console.log('無匹配條件，無法處理查詢');
         appendLog(groupId, '無匹配條件，無法處理查詢');
@@ -652,7 +657,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少')) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版')) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
