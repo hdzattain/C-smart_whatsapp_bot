@@ -17,7 +17,7 @@ const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆�
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
-
+const GROUP_ID_8 = 'xxxxxxxxxxxxxxxxxx@g.us'; //  啟德醫院🅰️Core/打窿工序通知群組Test
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
     GROUP_ID_2,
@@ -30,6 +30,11 @@ const EXTERNAL_SCAFFOLDING_GROUPS = [
 const BLACKLIST_GROUPS = [
   GROUP_ID_5,
   GROUP_ID_6
+];
+
+const DRILLING_GROUPS = [
+    GROUP_ID_8,
+    // 验证通过后，继续添加GROUP_ID_5
 ];
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
@@ -75,6 +80,21 @@ const NORMAL_FORMAT = {
   detailGenerator: generateSummaryDetails
 };
 
+const EXTERNAL_DRILL_FORMAT = {
+  title: '------Core drill hole Summary------',
+  guidelines: [
+    '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
+    '-✅❎為中建有冇影安全相,⭕❌為分判有冇影安全相',
+    '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange', ''],
+  timeSegments: [
+    { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+    { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+  ],
+  detailGenerator: generateDrillSummaryDetails
+};
+
 /**
  * 群組格式配置，支持不同群組的摘要格式。
  */
@@ -85,6 +105,7 @@ const GROUP_FORMATS = {
   [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_7]: NORMAL_FORMAT,
+  [GROUP_ID_8]: EXTERNAL_DRILL_FORMAT,
   // 未來群組可在此添加自定義格式
   default: NORMAL_FORMAT
 };
@@ -118,6 +139,202 @@ client.on('ready', () => {
   console.log('WhatsApp 机器人已启动');
   appendLog('default', 'WhatsApp 机器人已启动');
 });
+
+// ============================
+// 1. 完整模板定义
+// ============================
+const DRILL_TEMPLATES = {
+  apply: `1️⃣施工前準備
+1.已批施工方(結構部): ✅
+2.打拆位置為結構/非結構 (結構部): 結構
+3.已通知座頭RSS(工程部/施工部): (✅/❌) :✅
+4.工程範圍位置圖 (結構部工程部/施工部): (✅/❌):✅
+5.以上已由(施工部/工程部)確認: (✅/❌) ✅
+
+2️⃣開工內容: (開工前通知安全部)
+日期: // 申請日期，格式統一為 yyyy/MM/dd
+位置: // 申請位置，由"樓棟"和"位置"組成
+工作內容: // 工作內容，等同於"工序"
+申請分判: // 分判商
+
+3️⃣分判提交現場安全相片
+1.個人防墮✅
+2.現場上圍封✅
+3.現場下圍封✅`,
+
+  safety: `位置: 
+工作內容: 
+申請分判: 
+（圍封｜告示｜看守｜防墮｜眼罩｜耳塞｜安全帶）`,
+
+  leave: `位置: 
+工作內容: 
+申請分判: 
+已撤離`,
+};
+
+// ============================
+// 2. 封装的 Action 函数
+// ============================
+
+// 1. 申请开工
+async function handleApply(query, msg, groupId) {
+  const applyMatch = query.match(
+    /2️⃣開工內容.*?日期:\s*([^\n]+)\s*位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)/s
+  );
+  if (!applyMatch) {
+    return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.apply;
+  }
+  const [_full, _date, location, process, subcontractor] = applyMatch;
+  const floor = location.match(/(\d+\/F)/)?.[1] || '';
+  const hktTime = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const timeStr = hktTime.toISOString().slice(0, 19).replace('T', ' ');
+  const data = {
+    bstudio_create_time: timeStr,
+    location: location.trim(),
+    number: 1,
+    floor,
+    morning: 0,
+    afternoon: 0,
+    xiaban: 0,
+    subcontractor: subcontractor.trim(),
+    part_leave_number: 0,
+    process: process.trim(),
+    group_id: groupId,
+  };
+  let replyStr;
+  try {
+    await axios.post('http://llm-ai.c-smart.hk/records', data, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    replyStr = '申请成功';
+  } catch (e) {
+    replyStr = '申请失败，请重试';
+  }
+  return replyStr;
+}
+
+// 2. 安全相更新
+async function handleSafety(query, msg, groupId) {
+  const safetyMatch = query.match(
+    /位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)\s*(圍封|告示|看守|防墮|眼罩|耳塞|安全帶)/s
+  );
+  if (!safetyMatch) {
+    return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.safety;
+  }
+  const [_full, location, process, subcontractor] = safetyMatch;
+  const data = {
+    where: {
+      subcontractor: subcontractor.trim(),
+      process: process.trim(),
+      group_id: groupId,
+    },
+    set: {
+      safety_flag: 1
+    },
+  };
+  let replyStr;
+  try {
+    await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    replyStr = '安全相更新成功';
+  } catch (e) {
+    replyStr = '更新失败，请重试';
+  }
+  return replyStr;
+}
+
+// 3. 撤离
+async function handleLeave(query, msg, groupId) {
+  const leaveMatch = query.match(
+    /位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)\s*已撤離/s
+  );
+  if (!leaveMatch) {
+    return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.leave;
+  }
+  const [_full, location, process, subcontractor] = leaveMatch;
+  const data = {
+    where: {
+      subcontractor: subcontractor.trim(),
+      process: process.trim(),
+      group_id: groupId,
+    },
+    set: {
+      xiaban: 1
+    },
+  };
+  let replyStr;
+  try {
+    await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    replyStr = '安全相更新成功';
+  } catch (e) {
+    replyStr = '更新失败，请重试';
+  }
+  return replyStr;
+}
+
+// 4. 删除
+async function handleDelete(query, msg, groupId) {
+  const leaveMatch = query.match(
+    /位置:\s*([^\n]+)\s*工作內容:\s*([^\n]+)\s*申請分判:\s*([^\n]+)\s*/s
+  );
+  if (!leaveMatch) {
+    return '不符合模板，请拷贝模板重试。\n' + DRILL_TEMPLATES.leave;
+  }
+  const [_full, location, process, subcontractor] = leaveMatch;
+  const data = {
+    location: location.trim(),
+    process: process.trim(),
+    subcontrator: subcontractor.trim(), // 注意：原代码拼写为 subcontrator
+    group_id: groupId,
+  };
+  let replyStr;
+  try {
+    await axios.post('http://llm-ai.c-smart.hk/delete_fastgpt_records', data, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    replyStr = '删除成功';
+  } catch (e) {
+    replyStr = '删除失败，请重试';
+  }
+  return replyStr;
+}
+
+// ============================
+// 3. 重构后的 conditions 数组
+// ============================
+const drill_conditions = [
+  {
+    test: query => /(申請|開工|申请|开工)/.test(query),
+    action: (query, msg, groupId) => handleApply(query, msg, groupId),
+  },
+  {
+    test: query => /(圍封|告示|看守|防墮|眼罩|耳塞|安全帶|安全带|防坠|围封)/.test(query),
+    action: (query, msg, groupId) => handleSafety(query, msg, groupId),
+  },
+  {
+    test: query => /撤離|撤离/.test(query),
+    action: (query, msg, groupId) => handleLeave(query, msg, groupId),
+  },
+  {
+    test: query => /删除|刪/.test(query),
+    action: (query, msg, groupId) => handleDelete(query, msg, groupId),
+  },
+];
+
+// ============================
+// 4. 主逻辑调用
+// ============================
+async function processDrillingQuery(query, msg, groupId) {
+  for (const { test, action } of drill_conditions) {
+    if (test(query)) {
+      return await action(query, msg, groupId); // 匹配即终止
+    }
+  }
+}
 
 // —— 关键词检测 ——
 function containsSummaryKeyword(text) {
@@ -364,6 +581,28 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
   });
 
   return details;
+}
+
+function generateDrillSummaryDetails(data, formatConfig, groupId) {
+  if (!Array.isArray(data) || data.length === 0) {
+    return ['今日無開工記錄'];
+  }
+
+  return data.map((rec, i) => {
+    const seq = i + 1;
+    const location = rec.location?.trim() || '';
+    const subcontractor = rec.subcontractor?.trim() || '';
+    const process = rec.process?.trim() || '';
+
+    // 安全相：复用公共函数
+    const updateHistory = parseUpdateHistory(rec.update_history);
+    const safetyStatus = generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true);
+
+    // 撤离状态：复用 xiabanText
+    const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
+
+    return `${seq}. ${location}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+  });
 }
 
 function ensureDir(dir) {
@@ -621,7 +860,14 @@ client.on('message', async msg => {
     try {
       console.log(`開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
       appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
-      replyStr = await processQuery(query, groupId, user);
+      // ====== 关键改造：判断是否为打孔群组 ======
+      if (DRILLING_GROUPS.includes(groupId)) {
+        // —— 打孔群组专用逻辑 ——
+        replyStr = processDrillingQuery(query, msg, groupId);
+      } else {
+        // —— 其他群组走原有流程 ——
+        replyStr = await processQuery(query, groupId, user);
+      }
       if (replyStr === null) {
         console.log('無匹配條件，無法處理查詢');
         appendLog(groupId, '無匹配條件，無法處理查詢');
