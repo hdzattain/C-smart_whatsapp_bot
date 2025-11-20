@@ -13,20 +13,8 @@ app = Flask(__name__)
 # --- 外墙棚架群组定义 ---
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
-    '120363372181860061@g.us',
-    '120363401312839305@g.us',
-    '120363162893788546@g.us'
+    '120363372181860061@g.us'
 ]
-
-EXTERNAL_SCAFFOLDING_PROCESSES = [
-    "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線",
-    "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水", "清竹棚",
-    "釘板", "钉板", "打膠筒", "打胶筒", "開墨", "开墨", "批盪", "批荡", "較碼", "较码",
-    "打碼", "打码", "點焊", "点焊"]
-
-EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆",
-                                        "打膠桶", "平水", "清竹棚", "釘板", "打膠筒", "開墨", "批盪", "較碼", "打碼",
-                                        "點焊"]
 
 DB_CONFIG = {
     "host": "10.25.0.42",
@@ -160,10 +148,6 @@ def insert_one_record(data):
             return {
                 "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
 
-    # 校验工序
-    if error := validate_process(data):
-        return error
-
     # 校验 time_range 格式
     if error := validate_time_range(data):
         return error
@@ -174,7 +158,8 @@ def insert_one_record(data):
 
     number = int(data["number"])
     new_part = int(data.get("part_leave_number", 0) or 0)
-    today_str = (data.get("bstudio_create_time") or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+    hkt_tz = pytz.timezone("Asia/Hong_Kong")
+    today_str = (datetime.now(hkt_tz).strftime("%Y-%m-%d"))[:10]
     start_time = f"{today_str} 00:00:00"
     end_time = f"{today_str} 23:59:59"
 
@@ -260,15 +245,16 @@ def insert_one_record(data):
         record["uuid"] = data.get("uuid") or str(uuid.uuid4())
         record["xiaban"] = 1 if new_part == number else 0
 
-        # 处理时间字段
-        if record.get("bstudio_create_time"):
-            try:
-                dt = date_parser.parse(record["bstudio_create_time"])
-                record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # 处理时间字段 - 统一使用服务器当前时间，不考虑用户传入的时间
+        record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
+        # if record.get("bstudio_create_time"):
+        #     try:
+        #         dt = date_parser.parse(record["bstudio_create_time"])
+        #         record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+        #     except:
+        #         record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
+        # else:
+        #     record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         # 插入
         cols = ", ".join(f"`{f}`" for f in FIELDS)
@@ -282,15 +268,6 @@ def insert_one_record(data):
         return {"status": "ok", "inserted_id": record["id"]}
 
 
-# --- 外墙棚架 校验字段 ---
-def validate_process(data):
-    """校验工序字段"""
-    process_input = data.get("process", "")
-    processes = list(filter(None, re.split(r'[,，\s]+', process_input)))
-
-    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (
-            not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
-        return {"error": f"工序無效，應為 {', '.join(EXTERNAL_SCAFFOLDING_VALID_PROCESSES)} 的組合"}
 
 
 def validate_time_range(data):
@@ -323,6 +300,23 @@ def extract_building(location):
     if match:
         building_letter = match.group(1).upper()
         building = f"{building_letter}座"
+        return building
+
+    # 匹配 "A座" "A棟" "A樓" 以及复合格式如 "C座,CP9" 等
+    combined_building_regex = r'^([A-Z])[\s\-\_]*[座棟樓]([,\s]*[A-Z0-9\-]+)?'
+    match = re.match(combined_building_regex, location, re.IGNORECASE)
+    if match:
+        building_letter = match.group(1).upper()
+        building = f"{building_letter}座"
+        return building
+
+    # 匹配 "Block A" 格式
+    block_regex = r'^Block[\s\-_]*([A-Z])'
+    match = re.match(block_regex, location, re.IGNORECASE)
+    if match:
+        building_letter = match.group(1).upper()
+        building = f"{building_letter}座"
+        return building
 
     return building
 
