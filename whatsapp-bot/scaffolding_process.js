@@ -64,6 +64,13 @@ async function processScaffoldingQuery(query, groupId) {
   } catch (error) {
     console.log(`简繁转换失败: ${error.message}，使用原始输入内容处理工作流`);
   }
+
+  // 如果包含特定文本，则不向下执行
+  if ((query.includes('外牆棚工作許可證填妥及齊簽名視為開工') && query.includes('指引')) ||
+      query.includes('External Scaffolding Work(Permit to work)')) {
+    return "外墙群组无需处理的输入";
+  }
+
   for (const { test, action } of scaffold_conditions) {
     if (test(query)) {
       return await action(query, groupId); // 匹配即终止
