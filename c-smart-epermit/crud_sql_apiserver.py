@@ -429,10 +429,17 @@ def update_by_condition():
                     conditions.append(f"`{key}` BETWEEN %s AND %s")
                     params.extend([start, end])
                     continue
-            if key == "location" or key == "floor":
+            if key == "location":
                 # 将、，分隔符统一转换为逗号进行比较
                 conditions.append(
                     "REPLACE(REPLACE(REPLACE(`location`, '、', ','), ' ', ''), '，', ',') "
+                    "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
+                params.append(value)
+                continue
+            if key == "floor":
+                # 将、，分隔符统一转换为逗号进行比较
+                conditions.append(
+                    "REPLACE(REPLACE(REPLACE(`floor`, '、', ','), ' ', ''), '，', ',') "
                     "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
                 params.append(value)
                 continue

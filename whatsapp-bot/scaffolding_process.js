@@ -177,7 +177,7 @@ async function handleSafety(query, groupId) {
   query = normalizeQuery(query, fields);
   // 正则匹配用户输入，提取字段值
   const matches = extractFields(query, fields);
-  console.log(`群组id: ${groupId}, 安全相更新匹配的字段值： ${matches}`);
+  console.log(`群组id: ${groupId}, 安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
   appendLog(groupId, `安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
 
   const subcontractor = matches['分判商'];
@@ -231,7 +231,7 @@ async function handleLeave(query, groupId) {
   query = normalizeQuery(query, fields);
   // 正则匹配用户输入，提取字段值
   const matches = extractFields(query, fields);
-  console.log(`群组id: ${groupId}, 撤离更新匹配的字段值： ${matches}`);
+  console.log(`群组id: ${groupId}, 撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
   appendLog(groupId, `撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
 
   const subcontractor = matches['分判商'];
@@ -284,7 +284,7 @@ async function handleDelete(query, groupId) {
   query = normalizeQuery(query, fields);
   // 正则匹配用户输入，提取字段值
   const matches = extractFields(query, fields);
-  console.log(`群组id: ${groupId}, 删除场景匹配的字段值： ${matches}`);
+  console.log(`群组id: ${groupId}, 删除场景匹配的字段值： ${JSON.stringify(matches)}`);
   appendLog(groupId, `删除场景匹配的字段值： ${JSON.stringify(matches)}`);
 
   const subcontractor = matches['分判商'];
