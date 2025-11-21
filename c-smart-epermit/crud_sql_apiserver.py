@@ -459,7 +459,7 @@ def update_by_condition():
     for key, value in updates.items():
         if key in FIELDS:
             # part_leave_number 做累加更新
-            if key == "part_leave_number" and filters.get("group_id") not in EXTERNAL_SCAFFOLDING_GROUPS:
+            if key == "part_leave_number":
                 try:
                     inc = int(value)
                 except (TypeError, ValueError):
@@ -534,11 +534,10 @@ def validate_scaffold_group_fields(filters):
     """
     # 外墙棚架群组校验必填字段
     is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
-    required = ["subcontractor", "number", "process"]
+    required = ["subcontractor", "process"]
 
     name_dict = {
         "subcontractor": "分判",
-        "number": "人數",
         "process": "工序"
     }
 
@@ -548,21 +547,8 @@ def validate_scaffold_group_fields(filters):
         if missing_keys:
             missing_names = [name_dict[k] for k in missing_keys]
             return {
-                "error": f"缺少字段: {', '.join(missing_names)}，更新安全相、撤离时，请输入必填字段：[分判商][人数][工序]"
+                "error": f"缺少字段: {', '.join(missing_names)}，更新安全相、撤离时，请输入必填字段：[分判商][工序]"
             }
-
-        # 校验number字段值必须大于0
-        if "number" in filters:
-            try:
-                number_value = int(filters.get("number", 0))
-                if number_value <= 0:
-                    return {
-                        "error": "缺少字段: 人數，必須大於0，更新安全相、撤离时，请输入有效人数"
-                    }
-            except (ValueError, TypeError):
-                return {
-                    "error": "人數必須為有效數字，更新安全相、撤离时，请输入有效人数"
-                }
 
     return None
 
