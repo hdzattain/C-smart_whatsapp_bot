@@ -12,7 +12,7 @@ const SCAFFOLD_TEMPLATES = {
       "位置：\n" +
       "樓層：\n" +
       "工序：\n" +
-      "時間：",
+      "時間：HHMM-HHMM",
   safety: "分判商：\n" +
       "人數：X人\n" +
       "位置：\n" +
@@ -25,16 +25,14 @@ const SCAFFOLD_TEMPLATES = {
       "人數：X人\n" +
       "位置：\n" +
       "樓層：\n" +
-      "工序：\n" +
-      "時間：",
+      "工序：",
   delete: "刪除\n" +
       "日期：2025/XX/XX\n" +
       "分判商：\n" +
       "人數：X人\n" +
       "位置：\n" +
       "樓層：\n" +
-      "工序：\n" +
-      "時間："
+      "工序："
 };
 
 const scaffold_conditions = [
@@ -71,6 +69,8 @@ async function processScaffoldingQuery(query, groupId) {
       return await action(query, groupId); // 匹配即终止
     }
   }
+  // 如果没有匹配到任何条件，返回默认提示
+  return "未匹配到工作流";
 }
 // ============================
 // 1. 辅助函数
@@ -129,7 +129,7 @@ async function handleApply(query, groupId) {// 修正后的代码
   const time_range = matches['時間'];
 
   if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模板，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
   }
 
   const timeStr = new Date().toLocaleString('sv-SE', {
@@ -153,10 +153,12 @@ async function handleApply(query, groupId) {// 修正后的代码
   try {
     console.log(`群组id: ${groupId}, 外墙棚架申请流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架申请流程请求参数： ${JSON.stringify(data)}`);
-    await axios.post('http://llm-ai.c-smart.hk/records', data, {
+    const response = await axios.post('http://llm-ai.c-smart.hk/records', data, {
       headers: { 'Content-Type': 'application/json' },
     });
-    replyStr = '申請成功';
+    console.log(`群组id: ${groupId}, 外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
+    appendLog(groupId, `外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
+    replyStr = '申請请求完成';
   } catch (e) {
     replyStr = '申請失敗，請重試';
     console.log(`群组id: ${groupId}, 外墙群组-申请流程异常信息： ${e.message}`);
@@ -187,7 +189,7 @@ async function handleSafety(query, groupId) {
   const process = matches['工序'];
 
   if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模板，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.safety;
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.safety;
   }
 
   const data = {
@@ -207,10 +209,12 @@ async function handleSafety(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架安全相更新流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架安全相更新流程请求参数： ${JSON.stringify(data)}`);
-    await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+    const response = await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
       headers: { 'Content-Type': 'application/json' },
     });
-    replyStr = '安全相更新成功';
+    console.log(`群组id: ${groupId}, 外墙棚架安全相更新流程响应信息： ${JSON.stringify(response.data)}`);
+    appendLog(groupId, `外墙棚架安全相更新流程响应信息： ${JSON.stringify(response.data)}`);
+    replyStr = '安全相更新请求完成';
   } catch (e) {
     replyStr = '更新失敗，請重試';
     console.log(`群组id: ${groupId}, 外墙群组-安全相更新流程异常信息： ${e.message}`);
@@ -241,7 +245,7 @@ async function handleLeave(query, groupId) {
   const process = matches['工序'];
 
   if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模板，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave;
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave;
   }
   const data = {
     where: {
@@ -260,10 +264,12 @@ async function handleLeave(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架撤离流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架撤离流程请求参数： ${JSON.stringify(data)}`);
-    await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+    const response = await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
       headers: { 'Content-Type': 'application/json' },
     });
-    replyStr = '撤離成功';
+    console.log(`群组id: ${groupId}, 外墙棚架撤离流程响应信息： ${JSON.stringify(response.data)}`);
+    appendLog(groupId, `外墙棚架撤离流程响应信息： ${JSON.stringify(response.data)}`);
+    replyStr = '撤離请求完成';
   } catch (e) {
     replyStr = '撤離失敗，請重試';
     console.log(`群组id: ${groupId}, 外墙群组-撤離流程异常信息： ${e.message}`);
@@ -294,7 +300,7 @@ async function handleDelete(query, groupId) {
   const process = matches['工序'];
 
   if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模板，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete;
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete;
   }
   const data = {
     subcontractor: subcontractor.trim(),
@@ -308,10 +314,12 @@ async function handleDelete(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架删除流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架删除流程请求参数： ${JSON.stringify(data)}`);
-    await axios.post('http://llm-ai.c-smart.hk/delete_fastgpt_records', data, {
+    const response = await axios.post('http://llm-ai.c-smart.hk/delete_fastgpt_records', data, {
       headers: { 'Content-Type': 'application/json' },
     });
-    replyStr = '刪除成功';
+    console.log(`群组id: ${groupId}, 外墙棚架删除流程响应信息： ${JSON.stringify(response.data)}`);
+    appendLog(groupId, `外墙棚架删除流程响应信息： ${JSON.stringify(response.data)}`);
+    replyStr = '刪除请求完成';
   } catch (e) {
     replyStr = '刪除失敗，請重試';
     console.log(`群组id: ${groupId}, 外墙群组-删除流程异常信息： ${e.message}`);
