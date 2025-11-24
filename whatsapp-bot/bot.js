@@ -10,7 +10,8 @@ const { v4: uuidv4 } = require('uuid');
 const cron = require('node-cron');
 const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
-const { processScaffoldingQuery } = require('./scaffolding_process');
+const { processScaffoldingQuery } = require('./group_process/scaffolding_process');
+const { processDrillingQuery } = require('./group_process/drill_hole_process');
 
 // client对象（假定已全局初始化）
 const GROUP_ID = '120363418441024423@g.us'; // PTW LiftShaft TEST
@@ -20,6 +21,14 @@ const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆�
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
+const GROUP_ID_8 = 'XXX@g.us'; // 打窿工序测试群组
+
+// 打窿群组定义
+const DRILL_GROUPS = [
+    // GROUP_ID_5, // TODO 上线时需放开
+    GROUP_ID_8
+]
+
 
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
@@ -49,6 +58,23 @@ const TIME_SEGMENTS = [
   { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
   { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
 ];
+
+
+const DRILL_FORMAT = {
+  title: '------Core drill hole Summary------',
+  guidelines: [
+    '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
+    '-✅❎為中建有冇影安全相,⭕❌為分判有冇影安全相',
+    '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
+  timeSegments: [
+    { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+    { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+  ],
+  detailGenerator: generateDrillSummaryDetails
+};
+
 
 const EXTERNAL_SCAFFOLDING_FORMAT = {
   title: 'External Scaffolding Work(Permit to work)',
@@ -89,9 +115,10 @@ const GROUP_FORMATS = {
   [GROUP_ID]: NORMAL_FORMAT,
   [GROUP_ID_2]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_4]: EXTERNAL_SCAFFOLDING_FORMAT,
-  [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT, // TODO 上线时需调整为 DRILL_FORMAT
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_7]: NORMAL_FORMAT,
+  [GROUP_ID_8]: DRILL_FORMAT,
   // 未來群組可在此添加自定義格式
   default: NORMAL_FORMAT
 };
@@ -373,6 +400,27 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
   return details;
 }
 
+// 生成Summary详情方法（打窿群组）
+function generateDrillSummaryDetails(data, formatConfig, groupId) {
+  return data.map((rec, i) => {
+    const seq = i + 1;
+    const location = rec.location?.trim() || '';
+    const subcontractor = rec.subcontractor?.trim() || '';
+    const process = rec.process?.trim() || '';
+
+    // 安全相：复用公共函数
+    const updateHistory = parseUpdateHistory(rec.update_history);
+    const safetyStatus = generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true);
+
+    // 撤离状态：复用 xiabanText
+    const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
+
+    return `${seq}. ${location}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+  });
+}
+
+
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -637,6 +685,9 @@ client.on('message', async msg => {
       if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
         // —— 棚架群组专用逻辑 ——
         replyStr = await processScaffoldingQuery(query, groupId);
+      } else if (DRILL_GROUPS.includes(groupId)) {
+        // —— 打窿群组专用逻辑 ——
+        replyStr = await processDrillingQuery(query, groupId);
       } else {
         // —— 其他群组走原有流程 ——
         replyStr = await processQuery(query, groupId, user);
