@@ -21,7 +21,7 @@ const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆�
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
-const GROUP_ID_8 = 'XXX@g.us'; // 打窿工序测试群组
+const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
 
 // 打窿群组定义
 const DRILL_GROUPS = [
@@ -405,6 +405,7 @@ function generateDrillSummaryDetails(data, formatConfig, groupId) {
   return data.map((rec, i) => {
     const seq = i + 1;
     const location = rec.location?.trim() || '';
+    const floor = rec.floor?.trim() || '';
     const subcontractor = rec.subcontractor?.trim() || '';
     const process = rec.process?.trim() || '';
 
@@ -415,7 +416,7 @@ function generateDrillSummaryDetails(data, formatConfig, groupId) {
     // 撤离状态：复用 xiabanText
     const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
 
-    return `${seq}. ${location}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+    return `${seq}. ${location}，${floor}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
   });
 }
 
@@ -945,6 +946,7 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID_3);
     getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
+    getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
@@ -963,6 +965,7 @@ async function sendOTSummary() {
     getOTSummary(GROUP_ID_3);
     getOTSummary(GROUP_ID_4);
     getOTSummary(GROUP_ID_7);
+    getOTSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);

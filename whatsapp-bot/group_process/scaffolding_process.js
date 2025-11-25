@@ -3,6 +3,8 @@ const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
 const { appendLog } = require('../bot_logger_util');
 
+const CRUD_API_HOST = 'http://llm-ai.c-smart.hk';
+
 // 模板常量（需要根据实际模板内容进行填充）
 const SCAFFOLD_TEMPLATES = {
   apply: "申請\n" +
@@ -160,7 +162,7 @@ async function handleApply(query, groupId) {// 修正后的代码
   try {
     console.log(`群组id: ${groupId}, 外墙棚架申请流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架申请流程请求参数： ${JSON.stringify(data)}`);
-    const response = await axios.post('http://llm-ai.c-smart.hk/records', data, {
+    const response = await axios.post(`${CRUD_API_HOST}/records`, data, {
       headers: { 'Content-Type': 'application/json' },
     });
     console.log(`群组id: ${groupId}, 外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
@@ -216,7 +218,7 @@ async function handleSafety(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架安全相更新流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架安全相更新流程请求参数： ${JSON.stringify(data)}`);
-    const response = await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+    const response = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data, {
       headers: { 'Content-Type': 'application/json' },
     });
     console.log(`群组id: ${groupId}, 外墙棚架安全相更新流程响应信息： ${JSON.stringify(response.data)}`);
@@ -271,7 +273,7 @@ async function handleLeave(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架撤离流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架撤离流程请求参数： ${JSON.stringify(data)}`);
-    const response = await axios.put('http://llm-ai.c-smart.hk/records/update_by_condition', data, {
+      const response = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data, {
       headers: { 'Content-Type': 'application/json' },
     });
     console.log(`群组id: ${groupId}, 外墙棚架撤离流程响应信息： ${JSON.stringify(response.data)}`);
@@ -321,7 +323,7 @@ async function handleDelete(query, groupId) {
   try {
     console.log(`群组id: ${groupId}, 外墙棚架删除流程请求参数： ${JSON.stringify(data)}`);
     appendLog(groupId, `外墙棚架删除流程请求参数： ${JSON.stringify(data)}`);
-    const response = await axios.post('http://llm-ai.c-smart.hk/delete_fastgpt_records', data, {
+    const response = await axios.post(`${CRUD_API_HOST}/delete_fastgpt_records`, data, {
       headers: { 'Content-Type': 'application/json' },
     });
     console.log(`群组id: ${groupId}, 外墙棚架删除流程响应信息： ${JSON.stringify(response.data)}`);
