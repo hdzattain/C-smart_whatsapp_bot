@@ -8,22 +8,32 @@ const mime = require('mime-types');
 require('dotenv').config();
 const { v4: uuidv4 } = require('uuid');
 const cron = require('node-cron');
+const OpenCC = require('opencc-js');
+const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
+const { processScaffoldingQuery } = require('./group_process/scaffolding_process');
+const { processDrillingQuery } = require('./group_process/drill_hole_process');
 
 // client对象（假定已全局初始化）
-const GROUP_ID = '120363418441024423@g.us'; // 替换成目标群聊ID
-const GROUP_ID_2 = '120363400601106571@g.us'; // 替换成目标群聊ID
-const GROUP_ID_3 = '120363030675916527@g.us';
+const GROUP_ID = '120363418441024423@g.us'; // PTW LiftShaft TEST
+const GROUP_ID_2 = '120363400601106571@g.us'; // TEST_C-Smart_Bot
+const GROUP_ID_3 = '120363030675916527@g.us'; // 啟德醫院 B 𨋢膽第一線
 const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆棚架工作
 const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
+const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
+
+// 打窿群组定义
+const DRILL_GROUPS = [
+    // GROUP_ID_5, // TODO 上线时需放开
+    GROUP_ID_8
+]
+
 
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
     GROUP_ID_2,
-    GROUP_ID_4,
-    GROUP_ID_5,
-    GROUP_ID_6
+    GROUP_ID_4
 ]
 
 // 完全静默群组配置
@@ -31,6 +41,12 @@ const BLACKLIST_GROUPS = [
   GROUP_ID_5,
   GROUP_ID_6
 ];
+
+// 错误缺失提醒群组配置
+const ERROR_REPLY_GROUPS = [
+  GROUP_ID_2
+];
+
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
 const DIFY_BASE_URL = process.env.DIFY_BASE_URL || 'https://api.dify.ai/v1';
@@ -42,6 +58,23 @@ const TIME_SEGMENTS = [
   { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
   { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
 ];
+
+
+const DRILL_FORMAT = {
+  title: '------Core drill hole Summary------',
+  guidelines: [
+    '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
+    '-✅❎為中建有冇影安全相,⭕❌為分判有冇影安全相',
+    '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
+  ],
+  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
+  timeSegments: [
+    { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
+    { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
+  ],
+  detailGenerator: generateDrillSummaryDetails
+};
+
 
 const EXTERNAL_SCAFFOLDING_FORMAT = {
   title: 'External Scaffolding Work(Permit to work)',
@@ -82,9 +115,10 @@ const GROUP_FORMATS = {
   [GROUP_ID]: NORMAL_FORMAT,
   [GROUP_ID_2]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_4]: EXTERNAL_SCAFFOLDING_FORMAT,
-  [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT,
+  [GROUP_ID_5]: EXTERNAL_SCAFFOLDING_FORMAT, // TODO 上线时需调整为 DRILL_FORMAT
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_7]: NORMAL_FORMAT,
+  [GROUP_ID_8]: DRILL_FORMAT,
   // 未來群組可在此添加自定義格式
   default: NORMAL_FORMAT
 };
@@ -366,6 +400,28 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
   return details;
 }
 
+// 生成Summary详情方法（打窿群组）
+function generateDrillSummaryDetails(data, formatConfig, groupId) {
+  return data.map((rec, i) => {
+    const seq = i + 1;
+    const location = rec.location?.trim() || '';
+    const floor = rec.floor?.trim() || '';
+    const subcontractor = rec.subcontractor?.trim() || '';
+    const process = rec.process?.trim() || '';
+
+    // 安全相：复用公共函数
+    const updateHistory = parseUpdateHistory(rec.update_history);
+    const safetyStatus = generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true);
+
+    // 撤离状态：复用 xiabanText
+    const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
+
+    return `${seq}. ${location}，${floor}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+  });
+}
+
+
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -585,21 +641,27 @@ client.on('message', async msg => {
     async function processQuery(query, groupId, user) {
       query = `${query} [group_id:${groupId}]`;
 
+      try {
+        query = converter(query);
+      } catch (error) {
+        console.log(`简繁转换失败: ${error.message}，使用原始输入内容处理工作流`);
+      }
+
       const conditions = [
         {
-          test: query => /申請|申報|以下為申請位置/.test(query),
+          test: query => /申請|申報|以下為申請位置|開工|申请|申报|以下为申请位置|开工/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_RECORD })
         },
         {
-          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣带|返回室内|食飯/.test(query),
+          test: query => /現場安全|照明良好|安全設備齊全|安全檢查完成|安全帶|出棚|扣帶|圍封|看守|防墮|眼罩|耳塞|返回室内|现场安全|安全设备齐全|安全检查完成|安全带|扣带/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /(撤離|已撤離|人走晒|收工)/.test(query),
+          test: query => /(撤離|已撤離|人走晒|撤退|收工|撤离|已撤离|放工)/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_UPDATE })
         },
         {
-          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄/.test(query),
+          test: query => /刪除|撤回|刪除某天申請|刪除某位置記錄|删除|删除某天申请|删除某位置记录/.test(query),
           action: () => sendToFastGPT({ query, user, apikey: API_KEYS.EPERMIT_DELETE })
         }
       ];
@@ -621,7 +683,16 @@ client.on('message', async msg => {
     try {
       console.log(`開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
       appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
-      replyStr = await processQuery(query, groupId, user);
+      if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
+        // —— 棚架群组专用逻辑 ——
+        replyStr = await processScaffoldingQuery(query, groupId);
+      } else if (DRILL_GROUPS.includes(groupId)) {
+        // —— 打窿群组专用逻辑 ——
+        replyStr = await processDrillingQuery(query, groupId);
+      } else {
+        // —— 其他群组走原有流程 ——
+        replyStr = await processQuery(query, groupId, user);
+      }
       if (replyStr === null) {
         console.log('無匹配條件，無法處理查詢');
         appendLog(groupId, '無匹配條件，無法處理查詢');
@@ -638,7 +709,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少')) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版')) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
@@ -717,7 +788,7 @@ async function sendToFastGPT({ query, user, apikey }) {
   const data = {
     chatId: chatId,
     stream: false,
-    detail: false,
+    detail: true,
     messages: [
       {
         content: query,
@@ -745,6 +816,44 @@ async function sendToFastGPT({ query, user, apikey }) {
       if (!content) {
         throw new Error('FastGPT 返回数据中缺少 content 字段');
       }
+
+      // 遍历responseData，查找nodeId在FASTGPT_HTTP_NODE_IDS中的节点
+      const responseData = res.data.responseData || [];
+      if (responseData.length > 0) {
+        const lastNode = responseData[responseData.length - 1];
+        if (lastNode.textOutput) {
+          try {
+            if (ERROR_REPLY_GROUPS.some(groupId => query.includes(`[group_id:${groupId}]`))) {
+              console.log(`FAST GPT HTTP请求响应消息: ${lastNode.textOutput}`);
+              // 尝试解析textOutput为JSON数组
+              const parsedOutput = JSON.parse(lastNode.textOutput);
+              if (Array.isArray(parsedOutput)) {
+                // 提取包含"缺少"的error信息
+                const errorMessages = parsedOutput
+                  .filter(item => item.error && typeof item.error === 'string' && item.error.includes('缺少'))
+                  .map(item => item.error);
+
+                // 如果有匹配的错误信息，按格式拼接后返回
+                if (errorMessages.length > 0) {
+                  if (errorMessages.length === 1) {
+                    return errorMessages[0];
+                  } else {
+                    return `輸入存在以下問題：\n${errorMessages.map((error, index) => `${index + 1}、${error}`).join('\n')}`;
+                  }
+                }
+                // 如果没有符合条件的error，则不处理，继续返回content
+              } else if (parsedOutput.error && typeof parsedOutput.error === 'string' && parsedOutput.error.includes('缺少')) {
+                return parsedOutput.error;
+              }
+            } else {
+              console.log(`不在错误缺失提醒群组列表中，跳过错误缺失提醒`);
+            }
+          } catch (parseError) {
+            console.log(`FAST GPT HTTP请求响应解析失败: ${parseError.message}`);
+          }
+        }
+      }
+
       return content;
     } catch (err) {
       lastErr = err;
@@ -837,6 +946,7 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID_3);
     getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
+    getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
@@ -855,6 +965,7 @@ async function sendOTSummary() {
     getOTSummary(GROUP_ID_3);
     getOTSummary(GROUP_ID_4);
     getOTSummary(GROUP_ID_7);
+    getOTSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
