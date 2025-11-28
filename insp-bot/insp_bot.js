@@ -1336,17 +1336,13 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
     query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
     // 引用消息处理
-    const quoted = await msg.getQuotedMessage();
-    const qid = quoted?.id?._serialized || '';
-    if (qid) {
-      const quotedMsg = await parseMessageMentionsNumber(quoted, (quoted.body || '').trim());
-      query += ` 引用消息: ${quotedMsg} qid: ${qid}`;
-    }
-
     if (msg.quotedMsgId) {
       const quoted = await client.getMessageById(msg.quotedMsgId);
-      const quotedMsg = await parseMessageMentionsNumber(client, quoted, (quoted.body || '').trim());
-      query += ` 引用消息: ${quotedMsg}`;
+      const qid = quoted?.id || '';
+      if (qid) {
+        const quotedMsg = await parseMessageMentionsNumber(client, quoted, (quoted.body || '').trim());
+        query += ` 引用消息: ${quotedMsg} qid: ${qid}`;
+      }
     }
     query = await parseMessageMentionsNumber(client, msg, query);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
@@ -1588,14 +1584,17 @@ async function audioToText(filepath, user) {
   return '语音转文字结果（占位）';
 }
 
-async function handleQuotedReply(msg, groupId, senderId, body) {
+async function handleQuotedReply(client, msg, groupId, senderId, body) {
   try {
     const isOwnerOrCreator = (task, uid) =>
-    (task.creator === uid) || (Array.isArray(task.owners) && task.owners.includes(uid));
+      (task.creator === uid) || (Array.isArray(task.owners) && task.owners.includes(uid));
 
     const isAutoDone = (text) => /(完成|已处理|已解決|已解决|done)\b/i.test(text || '');
-    const quoted = await msg.getQuotedMessage();
-    const qid = quoted?.id?._serialized || '';
+
+    // WPPConnect: get quoted message by ID
+    if (!msg.quotedMsgId) return false;
+    const quoted = await client.getMessageById(msg.quotedMsgId);
+    const qid = quoted?.id || ''; // WPPConnect IDs are strings
     if (!qid) return false;
 
     let task = tasksStore[groupId].find(t => t.messageId === qid);
@@ -1610,23 +1609,23 @@ async function handleQuotedReply(msg, groupId, senderId, body) {
 
     if (!task || !isOwnerOrCreator(task, senderId)) return false;
 
-    const added = addProgress(task, body, senderId, msg.id?._serialized);
+    const added = addProgress(task, body, senderId, msg.id);
 
     if (isAutoDone(body)) {
       if (task.status === 'done') {
-        await msg.reply(`任务 *${task.id}* 已是完成状态。`);
+        await client.reply(msg.from, `任务 *${task.id}* 已是完成状态。`, msg.id);
         return true;
       }
       task.status = 'done';
       task.history.push({ at: new Date().toISOString(), by: senderId, action: 'auto-done' });
       saveTasks();
-      await msg.reply(`✅ 任务 *${task.id}* 已更新为【已完成】`);
+      await client.reply(msg.from, `✅ 任务 *${task.id}* 已更新为【已完成】`, msg.id);
       return true;
     }
 
     if (added) {
       saveTasks();
-      await msg.reply(`📝 已记录 *${task.id}* 的最新进展。`);
+      await client.reply(msg.from, `📝 已记录 *${task.id}* 的最新进展。`, msg.id);
       return true;
     }
 
