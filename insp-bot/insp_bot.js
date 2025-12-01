@@ -1535,6 +1535,68 @@ async function handlePlanBot(msg, groupId, isGroup) {
   }
 }
 
+async function handleWatchBot(client, msg, groupId, isGroup) {
+  try {
+    query = (msg.body || '').trim();
+    console.log(`[LOG] 原始消息内容: ${query}`);
+    appendLog(groupId, `[LOG] 原始消息内容: ${query}`);
+    const SenderContact = await client.getContact(msg.author || msg.from);
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+    appendLog(groupId, '[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+
+    if (!query) {
+      if (!isGroup || shouldReply(msg, BOT_NAME)) {
+        await client.reply(msg.from, '未识别到有效内容。', msg.id);
+        console.log('未识别到有效内容，已回复用户');
+        appendLog(groupId, '未识别到有效内容，已回复用户');
+      }
+    }
+    console.log('收到消息类型是msg.type', msg.type);
+    // —— 是否触发AI回复？只在群聊中检测 @机器人 或 /ai ——
+    const needReply = isGroup && shouldReply(msg, BOT_NAME);
+    console.log(`是否需要AI回复: ${needReply}`);
+    appendLog(groupId, `是否需要AI回复: ${needReply}`);
+
+    // —— 调用 FastGPT，拿到返回的 JSON 数据 ——
+    let replyStr;
+    try {
+      replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId});
+      console.log(`FastGPT response content: ${replyStr}`);
+      appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    } catch (e) {
+      console.log(`FastGPT 调用失败: ${e.message}`);
+      appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+      if (needReply) await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
+      return;
+    }
+
+    // —— 回复用户 ——
+    if (needReply || replyStr.includes('缺少')) {
+      try {
+        console.log(`尝试回复用户: ${replyStr}`);
+        appendLog(groupId, `尝试回复用户: ${replyStr}`);
+        await client.reply(msg.from, replyStr, msg.id);
+        console.log('已回复用户');
+        appendLog(groupId, '已回复用户');
+      } catch (e) {
+        console.log(`回复用户失败: ${e.message}`);
+        appendLog(groupId, `回复用户失败: ${e.message}`);
+      }
+    } else {
+      console.log('群聊未触发关键词，不回复，仅上传FastGPT');
+      appendLog(groupId, '群聊未触发关键词，不回复，仅上传FastGPT');
+    }
+
+  } catch (err) {
+    console.log(`处理消息出错: ${err.message}`);
+    appendLog(msg.from, `处理消息出错: ${err.message}`);
+    // try { await msg.reply('机器人处理消息时出错，请稍后再试。'); } catch { }
+    console.log('处理消息时发生异常');
+    appendLog(msg.from, '处理消息时发生异常');
+  }
+}
+
+
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -1821,6 +1883,9 @@ client.on('message', async msg => {
         break;
       case 'plan-bot':
         await handlePlanBot(msg, groupId, isGroup);
+        break;
+      case 'watch-bot':
+        await handleWatchBot(client, msg, groupId, isGroup);
         break;
       default:
         await msg.reply('未知 Bot 类型');
