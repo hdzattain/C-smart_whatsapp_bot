@@ -13,19 +13,29 @@
  * Refactored for @wppconnect-team/whatsapp
  */
 
+// 环境与核心模块
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
-const cron = require('node-cron');
-const wppconnect = require('@wppconnect-team/wppconnect');
-const FormData = require('form-data');
-const mime = require('mime-types');
 const fsPromises = fs.promises;
-const rimraf = require('rimraf').sync;
-const qrcode = require('qrcode-terminal');
-const fetch = require('node-fetch');
-const { v4: uuidv4 } = require('uuid');
+let jsonMappingsCache = null;  // 全局缓存，减少重复加载
+
+// HTTP 与请求模块
+const axios = require('axios');
+const fetch = require('node-fetch');  // 用于兼容性请求
+
+// WhatsApp 集成模块
+const wppconnect = require('@wppconnect-team/wppconnect');
+const qrcode = require('qrcode-terminal');  // QR 码终端显示
+
+// 文件与媒体处理模块
+const FormData = require('form-data');
+const mime = require('mime');  // 统一使用 mime（兼容 mime-types）；若需扩展，改回 mime-types
+const rimraf = require('rimraf');  // 异步版本：使用 rimraf.promises 或 fsPromises.rm
+
+// 工具与实用模块
+const cron = require('node-cron');  // 定时任务
+const { v4: uuidv4 } = require('uuid');  // UUID 生成
 
 // === 常量 & 配置加载 ===
 const LOG_DIR = path.join(__dirname, 'logs');
@@ -819,7 +829,7 @@ async function uploadImageToFeishu(filepath) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath), {
     filename: path.basename(filepath),
-    contentType: mime.lookup(filepath) || 'application/octet-stream'
+    contentType: mime.getType(filepath) || 'application/octet-stream'
   });
 
   try {
@@ -1062,7 +1072,7 @@ async function handleSummaryBot(client, msg, groupId) {
 
   let body = (msg.body || '').trim();
   console.log(`[LOG] 原始消息内容: ${body}`);
-  body = await parseMessageMentionsNumber(client, msg, body);
+  body = await parseMessageMentionsNumber(client, msg, body, chat.isGroup);
   console.log(`[LOG] parseMessageMentionsNumber处理后的消息内容: ${body}`);
   const senderId = msg.author || msg.from;
 
@@ -1348,13 +1358,13 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
       const qid = quoted?.id || '';
       if (qid) {
         const quotedText = await extractMessageText(client, quoted);  // 使用提取函数确保纯文本
-        const quotedMsg = await parseMessageMentionsNumber(client, quoted, quotedText || '');
+        const quotedMsg = await parseMessageMentionsNumber(client, quoted, quotedText || '', isGroup);
         query += ` 引用消息: ${quotedMsg} qid: ${qid}`;
       }
     }
 
     // 步骤4: 处理 mentions 和映射替换
-    query = await parseMessageMentionsNumber(client, msg, query);
+    query = await parseMessageMentionsNumber(client, msg, query, isGroup);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
 
     // 步骤5: 追加发送人信息和群组 ID
@@ -1406,7 +1416,7 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
       images.push(imageUrl);
 
       // 清理临时文件
-      await fsPromises.unlink(tempFilePath).catch(() => {});  // 忽略删除错误
+      await fsPromises.unlink(tempFilePath).catch(() => { });  // 忽略删除错误
     }
 
     // 步骤8: 决定是否回复
@@ -1573,58 +1583,102 @@ function saveLidMap(lid, number) {
   }
 }
 
-async function parseMessageMentionsNumber(client, msg, body = '') {
-  if (!msg || !body) {
-    console.error('[ERR] Message or body is not available');
-    return body || '';
-  }
+// 优化后：parseMessageMentionsNumber 函数
+async function parseMessageMentionsNumber(client, msg, inputQuery, isGroup = false) {
+  try {
+    console.log('[DEBUG] parseMessageMentionsNumber 输入 query:', inputQuery);
 
-  const mentions = msg.mentionedJidList || [];
-
-  if (mentions.length === 0) {
-    console.log('[DEBUG] 没有找到 mentions，使用 JSON 文件映射进行替换');
-    const lidMap = loadLidMap();
-    const mentionRegex = /@(\d+)/g;
-    let result = body;
-    result = result.replace(mentionRegex, (match, lid) => {
-      const number = lidMap[lid];
-      if (number) {
-        console.log(`[DEBUG] 从 JSON 替换: ${match} -> @${number}`);
-        return `@${number}`;
-      } else {
-        console.log(`[DEBUG] 未找到 LID: ${lid} 的映射，保持原样`);
-        return match;
-      }
-    });
-    return result;
-  }
-
-  console.log('[DEBUG] 获取到的 mentions:', JSON.stringify(mentions, null, 2));
-
-  // WPPConnect mentions are just JIDs (strings)
-  const numbers = mentions.map(jid => jid.split('@')[0]);
-  console.log('[DEBUG] 映射的 numbers:', numbers);
-
-  let result = body;
-  const mentionRegex = /@(\d+)/g;
-  let mentionIndex = 0;
-
-  result = result.replace(mentionRegex, (match, id) => {
-    console.log(`[DEBUG] 处理匹配: ${match}, ID: ${id}, 索引: ${mentionIndex}`);
-    if (mentionIndex < numbers.length) {
-      const replacement = `@${numbers[mentionIndex]}`;
-      saveLidMap(id, numbers[mentionIndex]);
-      console.log(`[DEBUG] 替换: ${match} -> ${replacement}`);
-      mentionIndex++;
-      return replacement;
-    } else {
-      console.log(`[DEBUG] 跳过: 索引 ${mentionIndex} 超出 numbers 长度`);
-      return match;
+    // 步骤1: 强制净化输入 query（确保为纯文本，避免 Base64）
+    let query = await extractMessageText(client, msg);
+    if (inputQuery && inputQuery.trim() && !inputQuery.startsWith('/9j/')) {
+      query = inputQuery.trim();
     }
-  });
+    // 处理多行 caption：连接为单行以便日志和替换
+    if (query.includes('\n')) {
+      query = query.replace(/\n/g, ' ').trim();
+    }
+    console.log('[DEBUG] parseMessageMentionsNumber 净化后 query:', query);
 
-  console.log(`[DEBUG] 处理后的结果: ${result}`);
-  return result;
+    // 步骤2: 检查 mentions（原有逻辑，基于净化 query）
+    const mentions = msg.mentions || [];
+    if (mentions.length > 0) {
+      for (const mention of mentions) {
+        const mapping = await getMentionMapping(mention);
+        const regex = new RegExp(`@${mention.replace('@c.us', '')}`, 'gi');
+        query = query.replace(regex, mapping || mention);
+      }
+      console.log('[LOG] Mentions 处理后消息内容:', query);
+      return query;
+    }
+
+    // 步骤3: 无 mentions 时，使用 JSON 文件映射替换
+    console.log('[DEBUG] 没有找到 mentions，使用 JSON 文件映射进行替换');
+
+    // 加载 JSON 映射（使用缓存）
+    if (!jsonMappingsCache) {
+      const mappingsPath = './mappings.json';  // 调整为实际路径
+      try {
+        const data = await fs.readFile(mappingsPath, 'utf8');
+        jsonMappingsCache = JSON.parse(data);
+        console.log('[DEBUG] JSON 映射加载成功，键数:', Object.keys(jsonMappingsCache).length);
+      } catch (error) {
+        console.warn('[WARN] JSON 映射文件加载失败，使用空映射:', error.message);
+        jsonMappingsCache = {};
+      }
+    }
+
+    // 仅对非媒体/非 Base64 字符串应用替换
+    if (msg.type === 'image' || msg.type === 'document' || msg.type === 'video' || query.startsWith('/9j/')) {
+      query = (msg.caption || query || '[媒体消息]').replace(/\n/g, ' ').trim();
+      console.log('[DEBUG] 媒体类型，强制使用 caption 作为 query:', query);
+    } else {
+      // 通用文本替换
+      for (const [key, value] of Object.entries(jsonMappingsCache)) {
+        const regex = new RegExp(key, 'gi');
+        query = query.replace(regex, value);
+      }
+    }
+
+    // 步骤4: 附加发送人信息（优化解析，兼容 WPPConnect）
+    const senderId = msg.author || msg.from;
+    let SenderContact = { number: 'unknown', name: 'unknown', pushname: 'unknown' };
+    try {
+      SenderContact = await client.getContact(senderId);
+      // 若仍 undefined，尝试群聊成员匹配（WPPConnect 标准 API）
+      if (!SenderContact.number && isGroup && msg.from.endsWith('@g.us')) {
+        const groupMembers = await client.getGroupMembers(msg.from);  // 返回参与者数组
+        const matchingMember = groupMembers.find(member => member.id._serialized === senderId);
+        if (matchingMember) {
+          SenderContact = {
+            number: matchingMember.id.user || 'unknown',
+            name: matchingMember.name || 'unknown',
+            pushname: matchingMember.pushname || SenderContact.pushname
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('[WARN] 获取发送人信息失败:', error.message);
+    }
+    // 回退到 pushname 若可用
+    if (SenderContact.pushname && (!SenderContact.name || SenderContact.name === 'undefined')) {
+      SenderContact.name = SenderContact.pushname;
+    }
+    const senderInfo = `发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
+    query += ` ${senderInfo}`;
+
+    console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
+    return query;
+
+  } catch (error) {
+    console.error('[ERROR] parseMessageMentionsNumber 失败:', error);
+    return inputQuery || '[处理失败]';
+  }
+}
+
+// 辅助函数：获取 mention 映射（示例；根据实际实现调整）
+async function getMentionMapping(mention) {
+  // 示例：从缓存或文件查询
+  return jsonMappingsCache?.[mention] || mention;
 }
 
 function shouldReply(msg, botName) {
@@ -1738,30 +1792,30 @@ function start(client) {
           console.log(`[LOG] 临时语音文件已删除: ${filepath}`);
         }
       } else if (msg.type === 'document') {  // 新增：处理文档消息
-          console.log('[LOG] 收到文档消息，MIME 类型:', msg.mimetype);
-          console.log('[LOG] 文档文件名:', msg.body || msg.filename || '[无文件名]');
-          const mediaData = await client.downloadMedia(msg);
-          if (mediaData) {
-            const ext = mime.extension(msg.mimetype) || 'bin';  // 根据 MIME 类型获取扩展名
-            const filename = `document_${Date.now()}.${ext}`;
-            const filepath = path.join(TMP_DIR, filename);
-            // mediaData 为 Buffer 或 Blob，根据库返回类型处理（此处假设 Buffer）
-            await fsPromises.writeFile(filepath, mediaData);
-            console.log(`[LOG] 文档已保存: ${filepath}`);
-            
-            // 可选：进一步处理文档内容（如提取 PDF 文本）
-            // query = await extractDocumentText(filepath, user);  // 自定义函数示例
-            
-            query = `[文档: ${msg.body || filename}]`;  // 设置查询为文档描述
-            console.log(`[LOG] 文档处理结果: ${query}`);
-            
-            // 可选：保留文件至 files 数组，或立即删除临时文件
-            files.push(filepath);  // 若需后续使用
-            // await fsPromises.unlink(filepath);  // 如仅日志则删除
-          } else {
-            console.log('[LOG] 文档下载失败');
-            query = '[文档下载失败]';
-          }
+        console.log('[LOG] 收到文档消息，MIME 类型:', msg.mimetype);
+        console.log('[LOG] 文档文件名:', msg.body || msg.filename || '[无文件名]');
+        const mediaData = await client.downloadMedia(msg);
+        if (mediaData) {
+          const ext = mime.extension(msg.mimetype) || 'bin';  // 根据 MIME 类型获取扩展名
+          const filename = `document_${Date.now()}.${ext}`;
+          const filepath = path.join(TMP_DIR, filename);
+          // mediaData 为 Buffer 或 Blob，根据库返回类型处理（此处假设 Buffer）
+          await fsPromises.writeFile(filepath, mediaData);
+          console.log(`[LOG] 文档已保存: ${filepath}`);
+
+          // 可选：进一步处理文档内容（如提取 PDF 文本）
+          // query = await extractDocumentText(filepath, user);  // 自定义函数示例
+
+          query = `[文档: ${msg.body || filename}]`;  // 设置查询为文档描述
+          console.log(`[LOG] 文档处理结果: ${query}`);
+
+          // 可选：保留文件至 files 数组，或立即删除临时文件
+          files.push(filepath);  // 若需后续使用
+          // await fsPromises.unlink(filepath);  // 如仅日志则删除
+        } else {
+          console.log('[LOG] 文档下载失败');
+          query = '[文档下载失败]';
+        }
       } else {  // 原有不支持类型分支
         query = '[暂不支持的消息类型]';
         console.log('[LOG] 收到暂不支持的消息类型:', msg.type);
@@ -1903,7 +1957,5 @@ wppconnect.create({
 })
   .then(client => start(client))
   .catch(error => console.log(error));
-
-
 
 
