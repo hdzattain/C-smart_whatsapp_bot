@@ -1329,64 +1329,94 @@ async function handleEmailBot(client, msg, groupId) {
 
 async function handlePlanBot(client, msg, groupId, isGroup) {
   try {
-    const images = [];
-    let query = (msg.body || '').trim();
-    console.log(`[LOG] 原始消息内容: ${query}`);
-    const SenderContact = await client.getContact(msg.author || msg.from);
+    // 步骤1: 提取发送人信息（缓存以避免重复调用）
+    const senderId = msg.author || msg.from;
+    const SenderContact = await client.getContact(senderId);
+    const senderInfo = `发送人number: ${SenderContact.number || 'undefined'} name: ${SenderContact.name || 'undefined'}, pushname: ${SenderContact.pushname || 'undefined'}`;
     console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
-    query += ` 发送人number: ${SenderContact.number} name: ${SenderContact.name}, pushname: ${SenderContact.pushname}`;
-    // 引用消息处理
+
+    // 步骤2: 根据消息类型提取纯文本 query（避免 Base64 污染）
+    let query = await extractMessageText(client, msg);
+    if (!query) {
+      query = '[未识别内容]';
+    }
+    console.log(`[LOG] 原始消息内容: ${query}`);
+
+    // 步骤3: 处理引用消息
     if (msg.quotedMsgId) {
       const quoted = await client.getMessageById(msg.quotedMsgId);
       const qid = quoted?.id || '';
       if (qid) {
-        const quotedMsg = await parseMessageMentionsNumber(client, quoted, (quoted.body || '').trim());
+        const quotedText = await extractMessageText(client, quoted);  // 使用提取函数确保纯文本
+        const quotedMsg = await parseMessageMentionsNumber(client, quoted, quotedText || '');
         query += ` 引用消息: ${quotedMsg} qid: ${qid}`;
       }
     }
+
+    // 步骤4: 处理 mentions 和映射替换
     query = await parseMessageMentionsNumber(client, msg, query);
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
+
+    // 步骤5: 追加发送人信息和群组 ID
+    query += ` ${senderInfo} [group_id:${groupId}]`;
+
+    // 步骤6: 检查是否为空或无效；早返回
     const isImage = msg.type === 'image' || msg.type === 'album';
-    if (!query) {
+    const isMedia = isImage || msg.type === 'document';  // 可扩展其他媒体
+    if (!query.trim() || query === '[未识别内容]') {
       if (!isGroup || shouldReply(msg, BOT_NAME)) {
         await client.reply(msg.from, '未识别到有效内容。', msg.id);
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
       }
-      if (!isImage) {
+      if (!isMedia) {
         console.log('当前的消息类型是 直接返回', msg.type);
         return;
       }
     }
 
     console.log('收到消息类型是msg.type', msg.type);
-    if (isImage) {
+
+    // 步骤7: 处理媒体上传（仅媒体类型）
+    const images = [];
+    if (isMedia) {
       console.log('当前的消息类型是msg.type', msg.type);
       const mediaData = await client.downloadMedia(msg);
-      if (!mediaData) throw new Error('无法下载图片');
+      if (!mediaData) {
+        throw new Error(`无法下载媒体: ${msg.type}`);
+      }
 
       const groupImgPath = path.join(TMP_DIR, groupId);
-      if (!fs.existsSync(groupImgPath)) {
-        fs.mkdirSync(groupImgPath, { recursive: true });
-      }
-      const tempFilePath = path.join(groupImgPath, `temp-image-${Date.now()}.jpg`);
-      const base64Data = mediaData.replace(/^data:.*;base64,/, '');
-      fs.writeFileSync(tempFilePath, Buffer.from(base64Data, 'base64'));
+      await fsPromises.mkdir(groupImgPath, { recursive: true });
 
-      const imageUrl = await uploadImageToFeishu(tempFilePath);
-      console.log(`[LOG] 图片已上传到飞书，URL: ${imageUrl}`);
+      let tempFilePath;
+      let ext = 'jpg';  // 默认图像
+      if (msg.type === 'document') {
+        ext = mime.extension(msg.mimetype) || 'pdf';
+      }
+      tempFilePath = path.join(groupImgPath, `temp-${msg.type}-${Date.now()}.${ext}`);
+
+      // 处理 Base64（假设 mediaData 为 base64 字符串）
+      const base64Data = typeof mediaData === 'string' ? mediaData.replace(/^data:.*;base64,/, '') : mediaData;
+      await fsPromises.writeFile(tempFilePath, Buffer.from(base64Data, 'base64'));
+
+      // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
+      const imageUrl = await uploadImageToFeishu(tempFilePath);  // 假设支持文档
+      console.log(`[LOG] 媒体已上传到飞书，URL: ${imageUrl}`);
       images.push(imageUrl);
 
-      // fs.unlinkSync(tempFilePath);
+      // 清理临时文件
+      await fsPromises.unlink(tempFilePath).catch(() => {});  // 忽略删除错误
     }
 
+    // 步骤8: 决定是否回复
     const needReply = isGroup && shouldReply(msg, BOT_NAME);
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
+    // 步骤9: 调用 FastGPT
     let replyStr;
     try {
-      query = `${query} [group_id:${groupId}]`;
       console.log(`开始调用FastGPT，query: ${query}`);
       appendLog(groupId, `开始调用FastGPT，query: ${query}`);
       if (images.length > 0) {
@@ -1404,10 +1434,13 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     } catch (e) {
       console.log(`FastGPT 调用失败: ${e.message}`);
       appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-      if (needReply) await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
+      if (needReply) {
+        await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
+      }
       return;
     }
 
+    // 步骤10: 执行回复
     if (needReply || replyStr.includes('缺少')) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
@@ -1426,9 +1459,28 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
 
   } catch (err) {
     console.log(`处理消息出错: ${err.message}`);
-    appendLog(msg.from, `处理消息出错: ${err.message}`);
+    appendLog(msg.from || groupId, `处理消息出错: ${err.message}`);
     console.log('处理消息时发生异常');
-    appendLog(msg.from, '处理消息时发生异常');
+    appendLog(msg.from || groupId, '处理消息时发生异常');
+  }
+}
+
+// 辅助函数：提取消息纯文本（新引入，避免污染）
+async function extractMessageText(client, msg) {
+  switch (msg.type) {
+    case 'chat':
+      return (msg.body || '').trim();
+    case 'image':
+    case 'album':
+      return (msg.caption || '[图片消息]').trim();
+    case 'document':
+      return (msg.caption || msg.body?.toString().trim() || `[文档: ${msg.mimetype}]`).trim();
+    case 'ptt':
+    case 'audio':
+      // 若需转文字，可异步调用 audioToText；此处假设预处理
+      return '[语音消息]';  // 或 await audioToText(...) 若集成
+    default:
+      return (msg.caption || msg.body || '[未知消息]').trim();
   }
 }
 
@@ -1851,6 +1903,7 @@ wppconnect.create({
 })
   .then(client => start(client))
   .catch(error => console.log(error));
+
 
 
 
