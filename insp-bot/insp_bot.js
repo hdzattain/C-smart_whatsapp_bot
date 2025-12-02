@@ -1685,7 +1685,32 @@ function start(client) {
           await fsPromises.unlink(filepath);
           console.log(`[LOG] 临时语音文件已删除: ${filepath}`);
         }
-      } else {
+      } else if (msg.type === 'document') {  // 新增：处理文档消息
+          console.log('[LOG] 收到文档消息，MIME 类型:', msg.mimetype);
+          console.log('[LOG] 文档文件名:', msg.body || msg.filename || '[无文件名]');
+          const mediaData = await client.downloadMedia(msg);
+          if (mediaData) {
+            const ext = mime.extension(msg.mimetype) || 'bin';  // 根据 MIME 类型获取扩展名
+            const filename = `document_${Date.now()}.${ext}`;
+            const filepath = path.join(TMP_DIR, filename);
+            // mediaData 为 Buffer 或 Blob，根据库返回类型处理（此处假设 Buffer）
+            await fsPromises.writeFile(filepath, mediaData);
+            console.log(`[LOG] 文档已保存: ${filepath}`);
+            
+            // 可选：进一步处理文档内容（如提取 PDF 文本）
+            // query = await extractDocumentText(filepath, user);  // 自定义函数示例
+            
+            query = `[文档: ${msg.body || filename}]`;  // 设置查询为文档描述
+            console.log(`[LOG] 文档处理结果: ${query}`);
+            
+            // 可选：保留文件至 files 数组，或立即删除临时文件
+            files.push(filepath);  // 若需后续使用
+            // await fsPromises.unlink(filepath);  // 如仅日志则删除
+          } else {
+            console.log('[LOG] 文档下载失败');
+            query = '[文档下载失败]';
+          }
+      } else {  // 原有不支持类型分支
         query = '[暂不支持的消息类型]';
         console.log('[LOG] 收到暂不支持的消息类型:', msg.type);
       }
@@ -1826,5 +1851,6 @@ wppconnect.create({
 })
   .then(client => start(client))
   .catch(error => console.log(error));
+
 
 
