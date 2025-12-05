@@ -38,7 +38,7 @@ const EXTERNAL_SCAFFOLDING_GROUPS = [
 
 // 完全静默群组配置
 const BLACKLIST_GROUPS = [
-  // GROUP_ID_5,
+  GROUP_ID_5,
   GROUP_ID_6
 ];
 
@@ -522,23 +522,30 @@ client.on('message', async msg => {
     let query = '';
     let files = [];
 
-    // if (msg.type !== 'chat') {
-    //   // 1. 第一道保险：等 1.2 秒让 WhatsApp Web 渲染完
-    //   // await new Promise(r => setTimeout(r, 1200));
-    //   // 2. 第二道保险：强制从服务器重新拉一次完整消息
-    //   let fresh;
-    //   try {
-    //       fresh = await client.getMessageById(msg.id._serialized);
-    //       console.log(`重新强制获取消息，消息内容: ${JSON.stringify(fresh)}`);
-    //       appendLog(`重新强制获取消息，消息内容: ${JSON.stringify(fresh)}`);
-    //   } catch (e) {
-    //       // 网络抖动再试一次
-    //       await new Promise(r => setTimeout(r, 1000));
-    //       fresh = await client.getMessageById(msg.id._serialized);
-    //       console.log(`发生异常 - 重新强制获取消息，消息内容: ${JSON.stringify(fresh)}`);
-    //       appendLog(`发生异常 - 重新强制获取消息，消息内容: ${JSON.stringify(fresh)}`);
-    //   }
-    // }
+    if (msg.type !== 'chat') {
+      // 1. 第一道保险：等 1.2 秒让 WhatsApp Web 渲染完
+      // await new Promise(r => setTimeout(r, 1200));
+      // 2. 第二道保险：强制从服务器重新拉一次完整消息
+      let fresh;
+      try {
+          await new Promise(r => setTimeout(r, 1000));
+          fresh = await client.getMessageById(msg.id._serialized);
+          msg = fresh;
+          console.log(`重新强制获取消息，from: ${fresh.from}, type: ${fresh.type}, body: ${fresh.body}`);
+          appendLog(user, `重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
+      } catch (e) {
+        try {
+          // 网络抖动再试一次
+          await new Promise(r => setTimeout(r, 1000));
+          fresh = await client.getMessageById(msg.id._serialized);
+          msg = fresh;
+          console.log(`重新强制获取消息，from: ${fresh.from}, type: ${fresh.type}, body: ${fresh.body}`);
+          appendLog(user, `重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
+        } catch (err) {
+          appendLog(user, `获取消息失败，使用原始消息，错误：${e.message}`);
+        }
+      }
+    }
 
     // 判断是否群聊
     const chat = await msg.getChat();
@@ -963,7 +970,6 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
     getSummary(GROUP_ID_4);
-    getSummary(GROUP_ID_5);
     getSummary(GROUP_ID_7);
     getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -973,7 +979,6 @@ async function sendTodaySummary() {
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_5, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
@@ -985,7 +990,6 @@ async function sendOTSummary() {
     getOTSummary(GROUP_ID_2);
     getOTSummary(GROUP_ID_3);
     getOTSummary(GROUP_ID_4);
-    getOTSummary(GROUP_ID_5);
     getOTSummary(GROUP_ID_7);
     getOTSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -994,7 +998,6 @@ async function sendOTSummary() {
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_5, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }

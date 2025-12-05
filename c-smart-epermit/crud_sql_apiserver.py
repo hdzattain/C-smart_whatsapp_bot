@@ -247,14 +247,6 @@ def insert_one_record(data):
 
         # 处理时间字段 - 统一使用服务器当前时间，不考虑用户传入的时间
         record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
-        # if record.get("bstudio_create_time"):
-        #     try:
-        #         dt = date_parser.parse(record["bstudio_create_time"])
-        #         record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-        #     except:
-        #         record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
-        # else:
-        #     record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         # 插入
         cols = ", ".join(f"`{f}`" for f in FIELDS)
