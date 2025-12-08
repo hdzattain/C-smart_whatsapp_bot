@@ -13,20 +13,8 @@ app = Flask(__name__)
 # --- 外墙棚架群组定义 ---
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
-    '120363372181860061@g.us',
-    '120363401312839305@g.us',
-    '120363162893788546@g.us'
+    '120363372181860061@g.us'
 ]
-
-EXTERNAL_SCAFFOLDING_PROCESSES = [
-    "清場", "清场", "測量", "测量", "打石矢", "預留碼", "预留码", "拆板", "開線",
-    "开线", "打炮", "油防水", "磨牆", "磨墙", "打膠桶", "打胶桶", "平水", "清竹棚",
-    "釘板", "钉板", "打膠筒", "打胶筒", "開墨", "开墨", "批盪", "批荡", "較碼", "较码",
-    "打碼", "打码", "點焊", "点焊"]
-
-EXTERNAL_SCAFFOLDING_VALID_PROCESSES = ["清場", "測量", "打石矢", "預留碼", "拆板", "開線", "打炮", "油防水", "磨牆",
-                                        "打膠桶", "平水", "清竹棚", "釘板", "打膠筒", "開墨", "批盪", "較碼", "打碼",
-                                        "點焊"]
 
 DB_CONFIG = {
     "host": "10.25.0.42",
@@ -155,14 +143,10 @@ def insert_one_record(data):
         missing_names = [name_dict[k] for k in missing_keys]
         if is_scaffold_group:
             return {
-                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請A03-BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
+                "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[樓層]，[分判]，[人數]，[工序]，[時間]格式輸入，如：“申請BLK A，A11-A13，9/F，偉健2人，工序:拆板，時間:0800-1800”"}
         else:
             return {
                 "error": f"缺少字段: {', '.join(missing_names)}，請按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F”"}
-
-    # 校验工序
-    if error := validate_process(data):
-        return error
 
     # 校验 time_range 格式
     if error := validate_time_range(data):
@@ -174,7 +158,8 @@ def insert_one_record(data):
 
     number = int(data["number"])
     new_part = int(data.get("part_leave_number", 0) or 0)
-    today_str = (data.get("bstudio_create_time") or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+    hkt_tz = pytz.timezone("Asia/Hong_Kong")
+    today_str = (datetime.now(hkt_tz).strftime("%Y-%m-%d"))[:10]
     start_time = f"{today_str} 00:00:00"
     end_time = f"{today_str} 23:59:59"
 
@@ -260,15 +245,8 @@ def insert_one_record(data):
         record["uuid"] = data.get("uuid") or str(uuid.uuid4())
         record["xiaban"] = 1 if new_part == number else 0
 
-        # 处理时间字段
-        if record.get("bstudio_create_time"):
-            try:
-                dt = date_parser.parse(record["bstudio_create_time"])
-                record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # 处理时间字段 - 统一使用服务器当前时间，不考虑用户传入的时间
+        record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         # 插入
         cols = ", ".join(f"`{f}`" for f in FIELDS)
@@ -282,15 +260,6 @@ def insert_one_record(data):
         return {"status": "ok", "inserted_id": record["id"]}
 
 
-# --- 外墙棚架 校验字段 ---
-def validate_process(data):
-    """校验工序字段"""
-    process_input = data.get("process", "")
-    processes = list(filter(None, re.split(r'[,，\s]+', process_input)))
-
-    if data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS and (
-            not processes or not all(p in EXTERNAL_SCAFFOLDING_PROCESSES for p in processes)):
-        return {"error": f"工序無效，應為 {', '.join(EXTERNAL_SCAFFOLDING_VALID_PROCESSES)} 的組合"}
 
 
 def validate_time_range(data):
@@ -323,6 +292,23 @@ def extract_building(location):
     if match:
         building_letter = match.group(1).upper()
         building = f"{building_letter}座"
+        return building
+
+    # 匹配 "A座" "A棟" "A樓" 以及复合格式如 "C座,CP9" 等
+    combined_building_regex = r'^([A-Z])[\s\-\_]*[座棟樓]([,\s]*[A-Z0-9\-]+)?'
+    match = re.match(combined_building_regex, location, re.IGNORECASE)
+    if match:
+        building_letter = match.group(1).upper()
+        building = f"{building_letter}座"
+        return building
+
+    # 匹配 "Block A" 格式
+    block_regex = r'^Block[\s\-_]*([A-Z])'
+    match = re.match(block_regex, location, re.IGNORECASE)
+    if match:
+        building_letter = match.group(1).upper()
+        building = f"{building_letter}座"
+        return building
 
     return building
 
@@ -414,6 +400,11 @@ def update_by_condition():
     print("after time added updates:", updates)
     print("FIELDS:", FIELDS)
 
+    # 校验外墙棚架群组在更新时的必填字段
+    error_response = validate_scaffold_group_fields(filters)
+    if error_response:
+        return error_response
+
     # location, building, floor 不区分大小写，不记入string_fields中
     string_fields = {"subcontractor", "group_id"}
     if filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS:
@@ -436,6 +427,14 @@ def update_by_condition():
                     "REPLACE(REPLACE(REPLACE(`location`, '、', ','), ' ', ''), '，', ',') "
                     "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
                 params.append(value)
+                continue
+            if key == "floor":
+                # 将、，分隔符统一转换为逗号进行比较
+                conditions.append(
+                    "REPLACE(REPLACE(REPLACE(`floor`, '、', ','), ' ', ''), '，', ',') "
+                    "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
+                params.append(value)
+                continue
             if key in string_fields:
                 conditions.append(f"BINARY `{key}` = %s")
             else:
@@ -452,7 +451,7 @@ def update_by_condition():
     for key, value in updates.items():
         if key in FIELDS:
             # part_leave_number 做累加更新
-            if key == "part_leave_number" and filters.get("group_id") not in EXTERNAL_SCAFFOLDING_GROUPS:
+            if key == "part_leave_number":
                 try:
                     inc = int(value)
                 except (TypeError, ValueError):
@@ -513,6 +512,37 @@ def update_by_condition():
     except Exception as e:
         print("Query error:", str(e))
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
+
+
+def validate_scaffold_group_fields(filters):
+    """
+    校验外墙棚架群组的必填字段
+
+    Args:
+        filters (dict): 过滤条件字典
+
+    Returns:
+        dict or None: 如果校验失败返回错误信息字典，否则返回None
+    """
+    # 外墙棚架群组校验必填字段
+    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    required = ["subcontractor", "process"]
+
+    name_dict = {
+        "subcontractor": "分判",
+        "process": "工序"
+    }
+
+    if is_scaffold_group:
+        # 检查缺失字段
+        missing_keys = [k for k in required if not filters.get(k)]
+        if missing_keys:
+            missing_names = [name_dict[k] for k in missing_keys]
+            return {
+                "error": f"缺少字段: {', '.join(missing_names)}，更新安全相、撤离时，请输入必填字段：[分判商][工序]"
+            }
+
+    return None
 
 
 # 新增工人
