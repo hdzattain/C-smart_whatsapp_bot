@@ -1451,7 +1451,7 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     }
 
     // 步骤10: 执行回复
-    if (needReply || replyStr.includes('缺少')) {
+    if (needReply) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
@@ -1530,7 +1530,7 @@ async function handleWatchBot(client, msg, groupId, isGroup) {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少')) {
+    if (needReply) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
