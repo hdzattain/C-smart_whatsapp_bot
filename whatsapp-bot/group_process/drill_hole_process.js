@@ -1,7 +1,8 @@
 const axios = require('axios');
 const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
-const { appendLog } = require('../bot_logger_util');
+const { appendLog } = require('../group_utils/bot_logger_util');
+
 
 const CRUD_API_HOST = 'http://llm-ai.c-smart.hk';
 

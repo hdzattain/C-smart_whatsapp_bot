@@ -2,7 +2,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 
-const LOG_DIR = path.join(__dirname, 'logs');
+const LOG_DIR = path.join(__dirname,  '..', 'logs');
 fs.ensureDirSync(LOG_DIR);
 
 function ensureDir(dir) {

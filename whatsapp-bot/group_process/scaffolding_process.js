@@ -1,7 +1,9 @@
 const axios = require('axios');
 const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
-const { appendLog } = require('../bot_logger_util');
+const { appendLog } = require('../group_utils/bot_logger_util');
+const { getSenderType } = require('../group_utils/sender_contract_util');
+
 
 const CRUD_API_HOST = 'http://llm-ai.c-smart.hk';
 
@@ -40,26 +42,26 @@ const SCAFFOLD_TEMPLATES = {
 const scaffold_conditions = [
   {
     test: query => /(申請|開工)/.test(query),
-    action: (query, groupId) => handleApply(query, groupId),
+    action: (msg, query, groupId, contactPhone) => handleApply(msg, query, groupId, contactPhone),
   },
   {
     test: query => /(安全帶|扣帶|返回室內|出棚)/.test(query),
-    action: (query, groupId) => handleSafety(query, groupId),
+    action: (msg, query, groupId, contactPhone) => handleSafety(msg, query, groupId, contactPhone),
   },
   {
     test: query => /(撤離|撤退|收工|放工)/.test(query),
-    action: (query, groupId) => handleLeave(query, groupId),
+    action: (msg, query, groupId, contactPhone) => handleLeave(msg, query, groupId, contactPhone),
   },
   {
     test: query => /刪除/.test(query),
-    action: (query, groupId) => handleDelete(query, groupId),
+    action: (msg, query, groupId, contactPhone) => handleDelete(msg, query, groupId, contactPhone),
   },
 ];
 
 // ============================
 // 外墙棚架工作流处理主函数
 // ============================
-async function processScaffoldingQuery(query, groupId) {
+async function processScaffoldingQuery(msg, query, groupId, contactPhone) {
   try {
     query = converter(query);
     appendLog(groupId, `外墙群组转换繁体，query: ${query}`);
@@ -75,7 +77,7 @@ async function processScaffoldingQuery(query, groupId) {
 
   for (const { test, action } of scaffold_conditions) {
     if (test(query)) {
-      return await action(query, groupId); // 匹配即终止
+      return await action(msg, query, groupId, contactPhone); // 匹配即终止
     }
   }
   // 如果没有匹配到任何条件，返回默认提示
@@ -112,7 +114,7 @@ function extractFields(query, fields) {
 // 2. 封装的 Action 函数
 // ============================
 // 1. 申请开工
-async function handleApply(query, groupId) {// 修正后的代码
+async function handleApply(msg, query, groupId, contactPhone) {// 修正后的代码
 
   const fields = [
     { name: '日期' },
@@ -176,7 +178,9 @@ async function handleApply(query, groupId) {// 修正后的代码
   return replyStr;
 }
 // 2. 安全相更新
-async function handleSafety(query, groupId) {
+async function handleSafety(msg, query, groupId, contactPhone) {
+  const senderType = getSenderType(contactPhone, groupId);
+
   const fields = [
     { name: '分判商' },
     { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },
@@ -188,8 +192,8 @@ async function handleSafety(query, groupId) {
   query = normalizeQuery(query, fields);
   // 正则匹配用户输入，提取字段值
   const matches = extractFields(query, fields);
-  console.log(`群组id: ${groupId}, 安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
-  appendLog(groupId, `安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
+  console.log(`群组id: ${groupId}, 发送人手机号: ${contactPhone}, 安全相更新类型: ${senderType}, 安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
+  appendLog(groupId, `发送人手机号: ${contactPhone}, 安全相更新类型: ${senderType}, 安全相更新匹配的字段值： ${JSON.stringify(matches)}`);
 
   const subcontractor = matches['分判商'];
   const number = matches['人數'];
@@ -212,6 +216,7 @@ async function handleSafety(query, groupId) {
     },
     set: {
       safety_flag: 1,
+      sender_type: senderType,
     },
   };
   let replyStr;
@@ -232,7 +237,7 @@ async function handleSafety(query, groupId) {
   return replyStr;
 }
 // 3. 撤离
-async function handleLeave(query, groupId) {
+async function handleLeave(msg, query, groupId, contactPhone) {
   const fields = [
     { name: '分判商' },
     { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },
@@ -287,7 +292,7 @@ async function handleLeave(query, groupId) {
   return replyStr;
 }
 // 4. 删除
-async function handleDelete(query, groupId) {
+async function handleDelete(msg, query, groupId, contactPhone) {
   const fields = [
     { name: '分判商' },
     { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },

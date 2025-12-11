@@ -323,6 +323,53 @@ function generateSafetyStatus(updateHistory, timeSegments, groupId, isExternal =
   }).join('，');
 }
 
+
+/**
+ * 公共函数：安全检查时间片段是否存在
+ * @param {Array} timestamps - 时间戳数组
+ * @param {string} segmentName - 时间段名称
+ * @param {string} groupId - 群组ID
+ * @returns {boolean} 是否存在该时间段的记录
+ */
+function hasTimestampInSegment(timestamps, segmentName, groupId) {
+  try {
+    return timestamps.some(timestamp => parseTimeSegment(timestamp, groupId) === segmentName);
+  } catch (e) {
+    return false;
+  }
+}
+
+// 公共函数：按角色生成 safetyStatus
+function generateRoleSafetyStatus(updateHistory, updateSafetyHistory, updateConstructHistory, timeSegments, groupId) {
+  return timeSegments.map(segment => {
+    const hasTimeInSegment = hasTimestampInSegment(updateHistory, segment.name, groupId);
+    const hasSafetyUpdateInSegment = hasTimestampInSegment(updateSafetyHistory, segment.name, groupId);
+    const hasConstructUpdateInSegment = hasTimestampInSegment(updateConstructHistory, segment.name, groupId);
+
+    const now = new Date();
+    const nowMinutes = (now.getUTCHours() + 8) * 60 + now.getUTCMinutes();
+
+    // 通用更新状态
+    const generalStatus = hasTimeInSegment
+      ? '⭕'
+      : (nowMinutes >= segment.end ? '❌' : '');
+
+    // 安全部更新状态
+    const safetyStatus = hasSafetyUpdateInSegment
+      ? '✅'
+      : (nowMinutes >= segment.end ? '❎' : '');
+
+    // 施工部更新状态
+    const constructStatus = hasConstructUpdateInSegment
+      ? '✔️'
+      : (nowMinutes >= segment.end ? '✖️' : '');
+
+    // 组合最终状态
+    return `${segment.name} ${safetyStatus}${constructStatus}${generalStatus}`;
+  }).join('，');
+}
+
+
 // 生成Summary详情方法（普通群组）
 function generateSummaryDetails(data, formatConfig, groupId) {
   const details = data.map((rec, i) => {
@@ -375,6 +422,8 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
 
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
+      const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
+      const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
 
       // 生成前缀（A01-, A02-, B01-, B02- 等）
       const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
@@ -386,7 +435,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
         number: rec.number || 0,
         process: rec.process || '',
         time_range: rec.time_range || '',
-        safetyStatus: generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true),
+        safetyStatus: generateRoleSafetyStatus(updateHistory, updateSafetyHistory, updateConstructHistory, formatConfig.timeSegments, groupId),
         xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
       };
 
@@ -563,6 +612,21 @@ client.on('message', async msg => {
     console.log(msg.body);
     appendLog(groupId, msg.body);
 
+    let contactPhone = '';
+    try {
+      if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
+        const senderContact = await client.getContactLidAndPhone([msg.author]);
+        console.log(`发送人通讯数据: ${JSON.stringify(senderContact)}`);
+        appendLog(user, `发送人通讯数据: ${JSON.stringify(senderContact)}`);
+        const contact = senderContact[0];
+        // 获取电话号码并去除 @c.us 后缀
+        contactPhone = contact ? contact.pn.replace('@c.us', '') : '';
+      }
+    } catch (contactError) {
+      console.log('获取发送人联系信息失败:', contactError.message);
+    }
+
+
     // —— 处理不同类型的 WhatsApp 消息 ——
     if (msg.type === 'chat') {
       query = msg.body.trim();
@@ -710,7 +774,7 @@ client.on('message', async msg => {
       appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
       if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
         // —— 棚架群组专用逻辑 ——
-        replyStr = await processScaffoldingQuery(query, groupId);
+        replyStr = await processScaffoldingQuery(msg, query, groupId, contactPhone);
       } else if (DRILL_GROUPS.includes(groupId)) {
         // —— 打窿群组专用逻辑 ——
         replyStr = await processDrillingQuery(query, groupId);
