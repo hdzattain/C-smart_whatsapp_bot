@@ -774,7 +774,7 @@ client.on('message', async msg => {
       appendLog(groupId, `開始處理查詢，query: ${query}, files: ${JSON.stringify(files)}`);
       if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
         // —— 棚架群组专用逻辑 ——
-        replyStr = await processScaffoldingQuery(msg, query, groupId, contactPhone);
+        replyStr = await processScaffoldingQuery(query, groupId, contactPhone);
       } else if (DRILL_GROUPS.includes(groupId)) {
         // —— 打窿群组专用逻辑 ——
         replyStr = await processDrillingQuery(query, groupId);

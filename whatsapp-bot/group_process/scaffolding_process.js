@@ -42,26 +42,26 @@ const SCAFFOLD_TEMPLATES = {
 const scaffold_conditions = [
   {
     test: query => /(申請|開工)/.test(query),
-    action: (msg, query, groupId, contactPhone) => handleApply(msg, query, groupId, contactPhone),
+    action: (query, groupId, contactPhone) => handleApply(query, groupId, contactPhone),
   },
   {
     test: query => /(安全帶|扣帶|返回室內|出棚)/.test(query),
-    action: (msg, query, groupId, contactPhone) => handleSafety(msg, query, groupId, contactPhone),
+    action: (query, groupId, contactPhone) => handleSafety(query, groupId, contactPhone),
   },
   {
     test: query => /(撤離|撤退|收工|放工)/.test(query),
-    action: (msg, query, groupId, contactPhone) => handleLeave(msg, query, groupId, contactPhone),
+    action: (query, groupId, contactPhone) => handleLeave(query, groupId, contactPhone),
   },
   {
     test: query => /刪除/.test(query),
-    action: (msg, query, groupId, contactPhone) => handleDelete(msg, query, groupId, contactPhone),
+    action: (query, groupId, contactPhone) => handleDelete(query, groupId, contactPhone),
   },
 ];
 
 // ============================
 // 外墙棚架工作流处理主函数
 // ============================
-async function processScaffoldingQuery(msg, query, groupId, contactPhone) {
+async function processScaffoldingQuery(query, groupId, contactPhone) {
   try {
     query = converter(query);
     appendLog(groupId, `外墙群组转换繁体，query: ${query}`);
@@ -77,7 +77,7 @@ async function processScaffoldingQuery(msg, query, groupId, contactPhone) {
 
   for (const { test, action } of scaffold_conditions) {
     if (test(query)) {
-      return await action(msg, query, groupId, contactPhone); // 匹配即终止
+      return await action(query, groupId, contactPhone); // 匹配即终止
     }
   }
   // 如果没有匹配到任何条件，返回默认提示
@@ -114,7 +114,7 @@ function extractFields(query, fields) {
 // 2. 封装的 Action 函数
 // ============================
 // 1. 申请开工
-async function handleApply(msg, query, groupId, contactPhone) {// 修正后的代码
+async function handleApply(query, groupId, contactPhone) {// 修正后的代码
 
   const fields = [
     { name: '日期' },
@@ -178,7 +178,7 @@ async function handleApply(msg, query, groupId, contactPhone) {// 修正后的�
   return replyStr;
 }
 // 2. 安全相更新
-async function handleSafety(msg, query, groupId, contactPhone) {
+async function handleSafety(query, groupId, contactPhone) {
   const senderType = getSenderType(contactPhone, groupId);
 
   const fields = [
@@ -237,7 +237,7 @@ async function handleSafety(msg, query, groupId, contactPhone) {
   return replyStr;
 }
 // 3. 撤离
-async function handleLeave(msg, query, groupId, contactPhone) {
+async function handleLeave(query, groupId, contactPhone) {
   const fields = [
     { name: '分判商' },
     { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },
@@ -292,7 +292,7 @@ async function handleLeave(msg, query, groupId, contactPhone) {
   return replyStr;
 }
 // 4. 删除
-async function handleDelete(msg, query, groupId, contactPhone) {
+async function handleDelete(query, groupId, contactPhone) {
   const fields = [
     { name: '分判商' },
     { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },

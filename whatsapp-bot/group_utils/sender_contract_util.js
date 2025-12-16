@@ -14,8 +14,6 @@ const SENDER_TYPES = {
 let CSG_SAFETY_PHONES = process.env.CSG_SAFETY_PHONES ? process.env.CSG_SAFETY_PHONES.split(',') : [];
 let CSG_CONSTRUCT_PHONES = process.env.CSG_CONSTRUCT_PHONES ? process.env.CSG_CONSTRUCT_PHONES.split(',') : [];
 
-// ... 其他代码 ...
-
 function refreshPhoneLists() {
   try {
     // 强制重新加载 .env 文件

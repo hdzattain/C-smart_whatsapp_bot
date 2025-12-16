@@ -1851,6 +1851,7 @@ function start(client) {
       const SenderContact = await client.getContact(msg.author || msg.from);
       let contactPhone = await getSenderPhoneNumber(client, msg.author || msg.from);
       console.log('[DEBUG 发送人的number, name, pushname分别是]',contactPhone, SenderContact.name, SenderContact.pushname);
+      appendLog(user, '[DEBUG 发送人的number, name, pushname分别是]',contactPhone, SenderContact.name, SenderContact.pushname);
 
       if (!isGroup) {
         console.log('[LOG] 不是群聊消息，不回复用户');
