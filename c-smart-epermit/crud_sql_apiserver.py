@@ -38,7 +38,7 @@ FIELDS = [
     "id", "group_id", "project", "uuid", "bstudio_create_time",
     "location", "number", "floor", "morning",
     "afternoon", "xiaban", "subcontractor", "part_leave_number",
-    "process", "time_range", "building", "update_history"
+    "process", "time_range", "building", "update_history", "update_safety_history", "update_construct_history", "safety_flag", "application_id"
 ]
 
 

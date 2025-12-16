@@ -132,6 +132,31 @@ const LOG_DIR  = path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'whatsapp.log');
 fs.ensureDirSync(LOG_DIR);
 
+// ID 转 Emoji (用于总结: A1 -> A1️⃣)
+function toEmojiId(appId) {
+  if (!appId) return '';
+  const match = appId.match(/^([A-Z])(\d+)$/);
+  if (!match) return appId;
+
+  const letter = match[1];
+  const numStr = match[2];
+  const emojiMap = {
+    '0': '0️⃣',
+    '1': '1️⃣',
+    '2': '2️⃣',
+    '3': '3️⃣',
+    '4': '4️⃣',
+    '5': '5️⃣',
+    '6': '6️⃣',
+    '7': '7️⃣',
+    '8': '8️⃣',
+    '9': '9️⃣'
+  };
+
+  const emojiNum = numStr.split('').map(d => emojiMap[d] || d).join('');
+  return `${letter}${emojiNum}`;
+}
+
 const client = new Client({
   authStrategy: new LocalAuth({
     clientId: 'whatsapp-bot-session',
@@ -418,18 +443,16 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
     // 按ID排序
     const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
     // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
-    const buildingLetter = building === '未知' ? '' : building.replace('座', '');
+    
 
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
       const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
-
-      // 生成前缀（A01-, A02-, B01-, B02- 等）
-      const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+      const displayId = toEmojiId(rec.application_id || '??');
 
       const fields = {
-        location: `${prefix}${rec.location || ''}`,
+        location: `${displayId}${rec.location || ''}`,
         floor: rec.floor || '',
         subcontractor: rec.subcontractor || '',
         number: rec.number || 0,
@@ -1033,7 +1056,6 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
-    getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
     getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -1042,7 +1064,6 @@ async function sendTodaySummary() {
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
@@ -1073,6 +1094,14 @@ cron.schedule('0 12 * * *', sendTodaySummary);  // 12:00
 cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
+cron.schedule('0 10-19 * * *', async () => {
+  try {
+      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
+      appendLog(GROUP_ID_4, '每小时总结推送成功');
+  } catch (e) {
+      console.error(e);
+  }
+});
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
 
 
