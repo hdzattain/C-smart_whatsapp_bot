@@ -16,6 +16,13 @@ EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363372181860061@g.us'
 ]
 
+# --- 打窿群组定义 ---
+DRILLING_GROUPS = [
+    '120363423214854498@g.us',
+    '120363401312839305@g.us'
+]
+
+
 DB_CONFIG = {
     "host": "10.25.0.42",
     "port": 3306,
@@ -166,13 +173,14 @@ def insert_one_record(data):
     # 查找当天已存在的记录
     # 如果是外墙群组，需要添加 process 和 time_range 的查询条件
     is_scaffold_group = data.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    is_drilling_group = data.get("group_id") in DRILLING_GROUPS
 
-    if is_scaffold_group:
+    if is_scaffold_group or is_drilling_group:
         # 外墙群组：添加 process 和 time_range 查询条件
         check_sql = f"""
             SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
             WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
-            AND REPLACE(`process`,' ','')=%s AND `time_range`=%s
+            AND REPLACE(`process`,' ','')=%s
             AND `bstudio_create_time` BETWEEN %s AND %s
             ORDER BY id DESC LIMIT 1
         """
@@ -183,7 +191,6 @@ def insert_one_record(data):
             data.get("number", 0),
             clean_string(data.get("floor", "")),
             clean_string(data.get("process", "")),
-            clean_string(data.get("time_range", "")),
             start_time,
             end_time
         )
@@ -466,11 +473,25 @@ def update_by_condition():
 
     # 添加update_history字段的更新
     safety_flag = updates.get("safety_flag")
+    sender_type = updates.get("sender_type")
     if safety_flag == 1:
-        # 添加update_history字段的更新
-        update_clause.append(f"`update_history` = JSON_ARRAY_APPEND(IFNULL(`update_history`, '[]'), '$', %s)")
-        update_params.append(current_time)
-        print("safety_flag为1，将更新update_history字段")
+        if sender_type == 1:
+            # 添加到中建安全部 update_safety_history
+            update_clause.append(f"`update_safety_history` = JSON_ARRAY_APPEND(IFNULL(`update_safety_history`, '[]'), "
+                                 f"'$', %s)")
+            update_params.append(current_time)
+            print("safety_flag为1，sender_type为1，将更新update_safety_history字段")
+        elif sender_type == 2:
+            # 添加到中建施工部 update_construct_history
+            update_clause.append(f"`update_construct_history` = JSON_ARRAY_APPEND(IFNULL(`update_construct_history`, "
+                                 f"'[]'), '$', %s)")
+            update_params.append(current_time)
+            print("safety_flag为1，sender_type为2，将更新update_construct_history字段")
+        else:
+            # 添加update_history字段的更新
+            update_clause.append(f"`update_history` = JSON_ARRAY_APPEND(IFNULL(`update_history`, '[]'), '$', %s)")
+            update_params.append(current_time)
+            print("safety_flag为1，将更新update_history字段")
     else:
         print(f"safety_flag为{safety_flag}，跳过update_history字段更新")
 
