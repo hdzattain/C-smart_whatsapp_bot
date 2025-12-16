@@ -452,7 +452,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
       const displayId = toEmojiId(rec.application_id || '??');
 
       const fields = {
-        location: `${displayId}${rec.location || ''}`,
+        location: `${displayId}-${rec.location || ''}`,
         floor: rec.floor || '',
         subcontractor: rec.subcontractor || '',
         number: rec.number || 0,
