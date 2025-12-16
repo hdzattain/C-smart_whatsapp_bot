@@ -1342,8 +1342,9 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     // 步骤1: 提取发送人信息（缓存以避免重复调用）
     const senderId = msg.author || msg.from;
     const SenderContact = await client.getContact(senderId);
-    const senderInfo = `发送人number: ${SenderContact.number || 'undefined'} name: ${SenderContact.name || 'undefined'}, pushname: ${SenderContact.pushname || 'undefined'}`;
-    console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+    let contactPhone = await getSenderPhoneNumber(client, senderId);
+    const senderInfo = `发送人number: ${contactPhone || 'undefined'} name: ${SenderContact.name || 'undefined'}, pushname: ${SenderContact.pushname || 'undefined'}`;
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
 
     // 步骤2: 根据消息类型提取纯文本 query（避免 Base64 污染）
     let query = await extractMessageText(client, msg);
@@ -1500,8 +1501,9 @@ async function handleWatchBot(client, msg, groupId, isGroup) {
     console.log(`[LOG] 原始消息内容: ${query}`);
     appendLog(groupId, `[LOG] 原始消息内容: ${query}`);
     const SenderContact = await client.getContact(msg.author || msg.from);
-    console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
-    appendLog(groupId, '[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+    let contactPhone = await getSenderPhoneNumber(client, msg.author || msg.from);
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
+    appendLog(groupId, '[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
 
     if (!query) {
       if (!isGroup || shouldReply(msg, BOT_NAME)) {
@@ -1706,6 +1708,8 @@ async function parseMessageMentionsNumber(client, msg, inputQuery, isGroup = fal
     let SenderContact = { number: 'unknown', name: 'unknown', pushname: 'unknown' };
     try {
       SenderContact = await client.getContact(senderId);
+      let contactPhone = await getSenderPhoneNumber(client, senderId);
+      SenderContact.number = contactPhone || SenderContact.number;
       // 若仍 undefined，尝试群聊成员匹配（WPPConnect 标准 API）
       if (!SenderContact.number && isGroup && msg.from.endsWith('@g.us')) {
         const groupMembers = await client.getGroupMembers(msg.from);  // 返回参与者数组
@@ -1804,6 +1808,30 @@ async function handleQuotedReply(client, msg, groupId, senderId, body) {
   }
 }
 
+/**
+ * 尝试从客户端获取发送者的电话号码
+ * @param {Object} client - WPPConnect 客户端实例
+ * @param {string} authorId - 消息作者的 ID (通常是 JID)
+ * @returns {Promise<string>} 解析后的电话号码，如果获取失败则返回空字符串
+ */
+async function getSenderPhoneNumber(client, authorId) {
+  let contactPhone = '';
+  try {
+    // 尝试调用 getPnLidEntry 方法获取信息
+    const info = await client.getPnLidEntry(authorId);
+
+    if (info && info.phoneNumber) {
+      console.log(`发送人通讯数据: ${JSON.stringify(info)}`);
+      // 从 phoneNumber 对象中提取实际的电话号码
+      contactPhone = info.phoneNumber.id ? info.phoneNumber.id.replace('@c.us', '') : '';
+    }
+  } catch (contactError) {
+    console.log('获取发送人联系信息失败:', contactError.message);
+  }
+  return contactPhone;
+}
+
+
 // Main Start Function
 function start(client) {
   console.log('WhatsApp Bot 已启动 (WPPConnect)');
@@ -1821,7 +1849,8 @@ function start(client) {
       appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
 
       const SenderContact = await client.getContact(msg.author || msg.from);
-      console.log('[DEBUG 发送人的number, name, pushname分别是]', SenderContact.number, SenderContact.name, SenderContact.pushname);
+      let contactPhone = await getSenderPhoneNumber(client, msg.author || msg.from);
+      console.log('[DEBUG 发送人的number, name, pushname分别是]',contactPhone, SenderContact.name, SenderContact.pushname);
 
       if (!isGroup) {
         console.log('[LOG] 不是群聊消息，不回复用户');
