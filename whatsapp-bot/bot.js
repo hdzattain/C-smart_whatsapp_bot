@@ -22,6 +22,7 @@ const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿�
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
+const GROUP_ID_9 = '120363420660094468@g.us'; // 牆棚架工作测试群组
 
 // 打窿群组定义
 const DRILL_GROUPS = [
@@ -33,7 +34,8 @@ const DRILL_GROUPS = [
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
     GROUP_ID_2,
-    GROUP_ID_4
+    GROUP_ID_4,
+    GROUP_ID_9
 ]
 
 // 完全静默群组配置
@@ -119,6 +121,7 @@ const GROUP_FORMATS = {
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_7]: NORMAL_FORMAT,
   [GROUP_ID_8]: DRILL_FORMAT,
+  [GROUP_ID_9]: EXTERNAL_SCAFFOLDING_FORMAT,
   // 未來群組可在此添加自定義格式
   default: NORMAL_FORMAT
 };
@@ -444,8 +447,8 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
     // 按ID排序
     const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
     // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
-    
 
+    
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);

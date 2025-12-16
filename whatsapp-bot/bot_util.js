@@ -58,7 +58,9 @@ function resetDailyIfNeeded(groupId) {
 // 提取楼栋字母 (A座 -> A, Blk A -> A, 默认 -> Z)
 function extractBuildingLetter(text = '') {
   const patterns = [
-    /([A-Za-z])[座棟]/ // A座, A棟
+    /([A-Za-z])[座棟]/,                // A座, A棟
+    /BLK\s*([A-Za-z])/i,               // Blk A
+    /Block\s*([A-Za-z])/i,             // Block A
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
