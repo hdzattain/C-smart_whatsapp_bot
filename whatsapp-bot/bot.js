@@ -135,10 +135,11 @@ fs.ensureDirSync(LOG_DIR);
 // ID 转 Emoji (用于总结: A1 -> A1️⃣)
 function toEmojiId(appId) {
   if (!appId) return '';
-  const match = appId.match(/^([A-Z])(\d+)$/);
+  // 支持大小写字母，例如 A12 / a12
+  const match = appId.match(/^([A-Z])(\d+)$/i);
   if (!match) return appId;
 
-  const letter = match[1];
+  const letter = match[1].toUpperCase();
   const numStr = match[2];
   const emojiMap = {
     '0': '0️⃣',
@@ -756,7 +757,9 @@ client.on('message', async msg => {
       try {
         query = converter(query);
       } catch (error) {
-        console.log(`简繁转换失败: ${error.message}，使用原始输入内容处理工作流`);
+        const errMsg = `简繁转换失败: ${error.message}，使用原始输入内容处理工作流`;
+        console.log(errMsg);
+        appendLog(groupId, errMsg);
       }
 
       const conditions = [
@@ -1099,7 +1102,9 @@ cron.schedule('0 10-19 * * *', async () => {
       await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
       appendLog(GROUP_ID_4, '每小时总结推送成功');
   } catch (e) {
+      const errMsg = `每小时总结推送失败: ${e.message}`;
       console.error(e);
+      appendLog(GROUP_ID_4, errMsg);
   }
 });
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00

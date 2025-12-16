@@ -80,15 +80,33 @@ async function handleSafetyById(appId, groupId) {
   };
   try {
     const res = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
-    if (res.data.affectedRows === 0) return `找唔到編號 ${appId}，請檢查是否已撤離或輸入錯誤。`;
+    if (res.data.affectedRows === 0) {
+      const errMsg = `找唔到編號 ${appId}，請檢查是否已撤離或輸入錯誤。`;
+      console.log(errMsg);
+      appendLog(groupId, errMsg);
+      return errMsg;
+    }
+    const successMsg = `安全相已記錄 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
     return `安全相已記錄 (編號: ${appId})`;
-  } catch (e) { return `系统錯誤: ${e.message}`; }
+  } catch (e) {
+    const errMsg = `安全相更新失败 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `系统錯誤: ${e.message}`;
+  }
 }
 
 async function handleLeaveById(appId, groupId) {
   try {
     const res = await axios.get(`${CRUD_API_HOST}/records/today`, { params: { group_id: groupId, application_id: appId } });
-    if (!res.data || res.data.length === 0) return `找唔到編號 ${appId}`;
+    if (!res.data || res.data.length === 0) {
+      const errMsg = `找唔到編號 ${appId}`;
+      console.log(errMsg);
+      appendLog(groupId, errMsg);
+      return errMsg;
+    }
     
     const record = res.data[0];
     const data = {
@@ -98,8 +116,16 @@ async function handleLeaveById(appId, groupId) {
       }, // 默认整队撤离
     };
     await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
-    return `已撤離 (編號: ${appId})`;
-  } catch (e) { return `撤離失敗: ${e.message}`; }
+    const successMsg = `已撤離 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
+    return successMsg;
+  } catch (e) {
+    const errMsg = `撤離失敗 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `撤離失敗: ${e.message}`;
+  }
 }
 
 async function handleDeleteById(appId, groupId) {
@@ -107,8 +133,16 @@ async function handleDeleteById(appId, groupId) {
   const data = { application_id: appId, group_id: groupId };
   try {
     await axios.post(`${CRUD_API_HOST}/delete_fastgpt_records`, data);
-    return `記錄已刪除 (編號: ${appId})`;
-  } catch (e) { return `刪除失敗: ${e.message}`; }
+    const successMsg = `記錄已刪除 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
+    return successMsg;
+  } catch (e) {
+    const errMsg = `刪除失敗 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `刪除失敗: ${e.message}`;
+  }
 }
 
 // 模板常量（需要根据实际模板内容进行填充）
