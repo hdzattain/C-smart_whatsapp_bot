@@ -66,7 +66,7 @@ const DRILL_FORMAT = {
   title: '------Core drill hole Summary------',
   guidelines: [
     '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
-    '-✅❎為中建有冇影安全相,⭕❌為分判有冇影安全相',
+    '-✅❎為中建有冇影安全相，⭕❌為分判有冇影安全相',
     '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
@@ -99,7 +99,7 @@ const NORMAL_FORMAT = {
   title: 'LiftShaft (Permit to Work)',
   guidelines: [
     '升降機槽工作許可證填妥及齊簽名視為開工',
-    '✅❎為中建影安全相,⭕❌為分判影安全相',
+    '✅❎為中建影安全相，⭕❌為分判影安全相',
     '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
@@ -1067,6 +1067,7 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
+    getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
     getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -1075,6 +1076,7 @@ async function sendTodaySummary() {
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
@@ -1088,6 +1090,8 @@ async function sendOTSummary() {
     getOTSummary(GROUP_ID_4);
     getOTSummary(GROUP_ID_7);
     getOTSummary(GROUP_ID_8);
+    getOTSummary(GROUP_ID_9);
+
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
@@ -1096,6 +1100,7 @@ async function sendOTSummary() {
     await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -1105,16 +1110,6 @@ cron.schedule('0 12 * * *', sendTodaySummary);  // 12:00
 cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
-cron.schedule('0 10-19 * * *', async () => {
-  try {
-      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
-      appendLog(GROUP_ID_4, '每小时总结推送成功');
-  } catch (e) {
-      const errMsg = `每小时总结推送失败: ${e.message}`;
-      console.error(e);
-      appendLog(GROUP_ID_4, errMsg);
-  }
-});
 cron.schedule('0 10-19 * * *', async () => {
   try {
       await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
