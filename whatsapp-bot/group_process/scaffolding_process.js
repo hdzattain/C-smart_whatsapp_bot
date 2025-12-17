@@ -22,7 +22,7 @@ function extractApplicationId(text) {
     .filter((line, idx) => !(idx < 3 && line.includes('位置：')))
     .join('\n');
   // 匹配：申请编号:A1 或 直接 A1 // 优化正则：行首或非单词字符后跟随 [Letter][Digit]
-  const match = cleanedText.match(/(?:申请编号|編號|Code)[:：\s]*([A-Za-z]\d{1,3})\b|\b([A-Za-z]\d{1,3})\b/i);
+  const match = cleanedText.match(/(?:申請編號|編號|Code)[:：\s]*([A-Za-z]\d{1,3})\b|\b([A-Za-z]\d{1,3})\b/i);
   return match ? (match[1] || match[2]).toUpperCase() : null;
 }
 
