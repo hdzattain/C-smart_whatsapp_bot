@@ -350,8 +350,25 @@ def normalize_date(dt_str: str) -> Optional[str]:
 
 @app.route("/records", methods=["GET"])
 def list_records():
-    # 支持通过url参数做简单筛选，比如 /records?group_id=xxx&subcontractor=xxx
-    filters = request.args.to_dict()
+    """
+    列表/查询记录
+    - 继续支持 URL 查询参数，例如： /records?group_id=xxx&subcontractor=xxx
+    - 额外支持在 GET 请求中通过 JSON body 传入查询条件
+      （例如 FastGPT 等只能用 POST/带 body 的场景，可以改成 GET + JSON body）
+    - body 与 query 参数同时存在时，后者优先覆盖同名字段
+    """
+    # 1. 读取 URL 查询参数
+    query_filters = request.args.to_dict()
+
+    # 2. 尝试从 body 中读取 JSON 作为过滤条件（即便是 GET 也允许有 body）
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    # 3. 合并：body 为基础，query 覆盖
+    filters = {**body_filters, **query_filters}
+
+    # 如果完全没有过滤条件，则返回所有记录
     if not filters:
         sql = f"SELECT * FROM `{TABLE_NAME}` ORDER BY `id`"
         rows = execute_query(sql, fetch=True)

@@ -99,7 +99,7 @@ const NORMAL_FORMAT = {
   title: 'LiftShaft (Permit to Work)',
   guidelines: [
     '升降機槽工作許可證填妥及齊簽名視為開工',
-    '✅❎為中建影安全相,✔✖為施工部影安全相,⭕❌為分判影安全相',
+    '✅❎為中建影安全相,⭕❌為分判影安全相',
     '收工影鎖門和撤銷許可證才視為工人完全撤離及交回安全部'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban'],
@@ -447,16 +447,21 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
     // 按ID排序
     const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
     // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
-
+    const buildingLetter = building === '未知' ? '' : building.replace('座', '');
     
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
       const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
-      const displayId = toEmojiId(rec.application_id || '??');
+      
+      prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+
+      if (groupId === GROUP_ID_9) {
+        prefix = toEmojiId(rec.application_id || '??');
+      }
 
       const fields = {
-        location: `${displayId}-${rec.location || ''}`,
+        location: `${prefix}-${rec.location || ''}`,
         floor: rec.floor || '',
         subcontractor: rec.subcontractor || '',
         number: rec.number || 0,
@@ -827,7 +832,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版')) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號')) && groupId == GROUP_ID_9) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
@@ -1108,6 +1113,16 @@ cron.schedule('0 10-19 * * *', async () => {
       const errMsg = `每小时总结推送失败: ${e.message}`;
       console.error(e);
       appendLog(GROUP_ID_4, errMsg);
+  }
+});
+cron.schedule('0 10-19 * * *', async () => {
+  try {
+      await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
+      appendLog(GROUP_ID_9, '每小时总结推送成功');
+  } catch (e) {
+      const errMsg = `每小时总结推送失败: ${e.message}`;
+      console.error(e);
+      appendLog(GROUP_ID_9, errMsg);
   }
 });
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00

@@ -16,8 +16,13 @@ function getFirstThreeLines(text) {
 
 // 提取申请编号 (A1, B12)
 function extractApplicationId(text) {
+  // 先把前 3 行中包含「位置：」的内容去掉，再做编号匹配
+  const cleanedText = text
+    .split(/\r?\n/)
+    .filter((line, idx) => !(idx < 3 && line.includes('位置：')))
+    .join('\n');
   // 匹配：申请编号:A1 或 直接 A1 // 优化正则：行首或非单词字符后跟随 [Letter][Digit]
-  const match = text.match(/(?:申请编号|編號|Code)[:：\s]*([A-Za-z]\d{1,3})\b|\b([A-Za-z]\d{1,3})\b/i);
+  const match = cleanedText.match(/(?:申请编号|編號|Code)[:：\s]*([A-Za-z]\d{1,3})\b|\b([A-Za-z]\d{1,3})\b/i);
   return match ? (match[1] || match[2]).toUpperCase() : null;
 }
 
@@ -55,7 +60,7 @@ async function processScaffoldingQuery(query, groupId) {
     }
     // 撤离
     if (/撤離|撤离|收工|放工/.test(query)) {
-      return await handleLeaveById(appId, groupId);
+      return await handleLeaveById(appId, groupId, query);
     }
     // 删除
     if (/刪除|删除|取消/.test(query)) {
@@ -98,8 +103,9 @@ async function handleSafetyById(appId, groupId) {
   }
 }
 
-async function handleLeaveById(appId, groupId) {
+async function handleLeaveById(appId, groupId, query) {
   try {
+
     const res = await axios.get(`${CRUD_API_HOST}/records/today`, { params: { group_id: groupId, application_id: appId } });
     if (!res.data || res.data.length === 0) {
       const errMsg = `找唔到編號 ${appId}`;
@@ -107,13 +113,27 @@ async function handleLeaveById(appId, groupId) {
       appendLog(groupId, errMsg);
       return errMsg;
     }
-    
+
+    const fields = [
+      { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },
+    ];
+    // 匹配字段，添加换行
+    query = normalizeQuery(query, fields);
+    // 正则匹配用户输入，提取字段值
+    const matches = extractFields(query, fields);
+    console.log(`群组id: ${groupId}, 撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
+    appendLog(groupId, `撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
+  
+    const part_leave_number_from_query = matches['人數'];
+
     const record = res.data[0];
     const data = {
       where: { application_id: appId, group_id: groupId },
       set: {
-          part_leave_number: parseInt(record.number)
-      }, // 默认整队撤离
+        part_leave_number: part_leave_number_from_query 
+          ? parseInt(part_leave_number_from_query) 
+          : parseInt(record.number)
+      }, 
     };
     await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
     const successMsg = `已撤離 (編號: ${appId})`;
