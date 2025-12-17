@@ -461,7 +461,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
       }
 
       const fields = {
-        location: `${prefix}-${rec.location || ''}`,
+        location: `${prefix}${rec.location || ''}`,
         floor: rec.floor || '',
         subcontractor: rec.subcontractor || '',
         number: rec.number || 0,
