@@ -80,7 +80,7 @@ const EXTERNAL_SCAFFOLDING_FORMAT = {
   title: 'External Scaffolding Work(Permit to work)',
   guidelines: [
     '外牆棚工作許可證填妥及齊簽名視為開工',
-    '✅❎為中建影安全相，⭕❌為分判影安全相',
+    '✅❎為中建影安全相，✔️✖️為中建施工部，⭕❌為分判影安全相',
     '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange', ''],
