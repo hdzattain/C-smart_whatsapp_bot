@@ -6,6 +6,164 @@ const { getSenderType } = require('../group_utils/sender_contract_util');
 
 
 const CRUD_API_HOST = 'http://llm-ai.c-smart.hk';
+const { generateApplicationId, resetDailyIfNeeded } = require('../bot_util.js');
+
+// 提取前三行用于短码识别
+function getFirstThreeLines(text) {
+  return text.split('\n').slice(0, 3).join('\n');
+}
+
+
+// 提取申请编号 (A1, B12)
+function extractApplicationId(text) {
+  // 先把前 3 行中包含「位置：」的内容去掉，再做编号匹配
+  const cleanedText = text
+    .split(/\r?\n/)
+    .filter((line, idx) => !(idx < 3 && line.includes('位置：')))
+    .join('\n');
+  // 匹配：申请编号:A1 或 直接 A1 // 优化正则：行首或非单词字符后跟随 [Letter][Digit]
+  const match = cleanedText.match(/(?:申請編號|編號|Code)[:：\s]*([A-Za-z]\d{1,3})\b|\b([A-Za-z]\d{1,3})\b/i);
+  return match ? (match[1] || match[2]).toUpperCase() : null;
+}
+
+// ============================
+// 外墙棚架工作流处理主函数
+// ============================
+
+async function processScaffoldingQuery(query, groupId) {
+  try { query = converter(query); } catch (e) {}
+
+  // 忽略总结消息
+  if (query.includes('External Scaffolding Work') || query.includes('指引')) return null;
+
+  const firstThree = getFirstThreeLines(query);
+  const appId = extractApplicationId(firstThree);
+
+  resetDailyIfNeeded(groupId);
+
+  // === 场景 1: 申请 (Apply) === // 逻辑：生成ID -> 插入DB -> 回写ID -> 返回带ID的成功消息
+  if (/申請|開工|申请|开工/.test(query)) {
+    const newAppId = generateApplicationId(query, groupId);
+    const insertReply = await handleApply(query, groupId, undefined, newAppId); // 复用原有解析逻辑
+    // 如果插入成功（不是错误提示），回写 ID
+    if (!insertReply.includes('不符合模版')) {
+      return `申請成功！\n申請編號：${newAppId}\n\n${insertReply}`;
+    }
+    return insertReply;
+  }
+
+  // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
+  if (appId) {
+    // 安全相
+    if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
+      return await handleSafetyById(appId, groupId);
+    }
+    // 撤离
+    if (/撤離|撤离|收工|放工/.test(query)) {
+      return await handleLeaveById(appId, groupId, query);
+    }
+    // 删除
+    if (/刪除|删除|取消/.test(query)) {
+      return await handleDeleteById(appId, groupId);
+    }
+  }
+
+  // === 场景 3: 降级处理 (Fallback) ===
+  // 无 ID 或无匹配短码，走原有严格模板
+  for (const { test, action } of scaffold_conditions) {
+    if (test(query)) return await action(query, groupId);
+  }
+
+  return "未匹配到工作流";
+}
+
+async function handleSafetyById(appId, groupId) {
+  // 根据需求，只要有编号+唤醒词，其他不填也没问题。// 我们只更新 safety_flag，如果用户补了时间等信息，这里暂不解析（为了"快"），// 如需解析非必填字段可在此处正则提取。此处按需求"其他字段不填/填错都没问题"处理。
+  const data = {
+    where: { application_id: appId, group_id: groupId },
+    set: { safety_flag: 1 }
+  };
+  try {
+    const res = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
+    if (res.data.affectedRows === 0) {
+      const errMsg = `找唔到編號 ${appId}，請檢查是否已撤離或輸入錯誤。`;
+      console.log(errMsg);
+      appendLog(groupId, errMsg);
+      return errMsg;
+    }
+    const successMsg = `安全相已記錄 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
+    return `安全相已記錄 (編號: ${appId})`;
+  } catch (e) {
+    const errMsg = `安全相更新失败 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `系统錯誤: ${e.message}`;
+  }
+}
+
+async function handleLeaveById(appId, groupId, query) {
+  try {
+
+    const res = await axios.get(`${CRUD_API_HOST}/records/today`, { params: { group_id: groupId, application_id: appId } });
+    if (!res.data || res.data.length === 0) {
+      const errMsg = `找唔到編號 ${appId}`;
+      console.log(errMsg);
+      appendLog(groupId, errMsg);
+      return errMsg;
+    }
+
+    const fields = [
+      { name: '人數', regex: /人數[：:]\s*(\d+)[人個]?/ },
+    ];
+    // 匹配字段，添加换行
+    query = normalizeQuery(query, fields);
+    // 正则匹配用户输入，提取字段值
+    const matches = extractFields(query, fields);
+    console.log(`群组id: ${groupId}, 撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
+    appendLog(groupId, `撤离更新匹配的字段值： ${JSON.stringify(matches)}`);
+  
+    const part_leave_number_from_query = matches['人數'];
+
+    const record = res.data[0];
+    const data = {
+      where: { application_id: appId, group_id: groupId },
+      set: {
+        part_leave_number: part_leave_number_from_query 
+          ? parseInt(part_leave_number_from_query) 
+          : parseInt(record.number)
+      }, 
+    };
+    await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
+    const successMsg = `已撤離 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
+    return successMsg;
+  } catch (e) {
+    const errMsg = `撤離失敗 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `撤離失敗: ${e.message}`;
+  }
+}
+
+async function handleDeleteById(appId, groupId) {
+  // 注意：API服务器需要支持按 application_id 删除// 临时方案：先查 ID 拿到 sub/loc 再调原有删除，或者修改后端支持 fast delete// 这里假设后端已支持传 application_id
+  const data = { application_id: appId, group_id: groupId };
+  try {
+    await axios.post(`${CRUD_API_HOST}/delete_fastgpt_records`, data);
+    const successMsg = `記錄已刪除 (編號: ${appId})`;
+    console.log(successMsg);
+    appendLog(groupId, successMsg);
+    return successMsg;
+  } catch (e) {
+    const errMsg = `刪除失敗 (編號: ${appId}): ${e.message}`;
+    console.log(errMsg);
+    appendLog(groupId, errMsg);
+    return `刪除失敗: ${e.message}`;
+  }
+}
 
 // 模板常量（需要根据实际模板内容进行填充）
 const SCAFFOLD_TEMPLATES = {
@@ -59,31 +217,6 @@ const scaffold_conditions = [
 ];
 
 // ============================
-// 外墙棚架工作流处理主函数
-// ============================
-async function processScaffoldingQuery(query, groupId, contactPhone) {
-  try {
-    query = converter(query);
-    appendLog(groupId, `外墙群组转换繁体，query: ${query}`);
-  } catch (error) {
-    console.log(`简繁转换失败: ${error.message}，使用原始输入内容处理工作流`);
-  }
-
-  // 如果包含特定文本，则不向下执行
-  if ((query.includes('外牆棚工作許可證填妥及齊簽名視為開工') && query.includes('指引')) ||
-      query.includes('External Scaffolding Work(Permit to work)')) {
-    return "外墙群组无需处理的输入";
-  }
-
-  for (const { test, action } of scaffold_conditions) {
-    if (test(query)) {
-      return await action(query, groupId, contactPhone); // 匹配即终止
-    }
-  }
-  // 如果没有匹配到任何条件，返回默认提示
-  return "未匹配到工作流";
-}
-// ============================
 // 1. 辅助函数
 // ============================
 // 1、输入格式化函数 - 为关键字添加换行符
@@ -114,7 +247,7 @@ function extractFields(query, fields) {
 // 2. 封装的 Action 函数
 // ============================
 // 1. 申请开工
-async function handleApply(query, groupId, contactPhone) {// 修正后的代码
+async function handleApply(query, groupId, contactPhone, applicationId) {// 修正后的代码
 
   const fields = [
     { name: '日期' },
@@ -159,6 +292,7 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
     xiaban: 0,
     part_leave_number: 0,
     group_id: groupId,
+    application_id: applicationId 
   };
   let replyStr;
   try {

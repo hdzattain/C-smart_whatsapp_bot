@@ -22,6 +22,7 @@ const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿�
 const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
+const GROUP_ID_9 = '120363420660094468@g.us'; // 牆棚架工作测试群组
 
 // 打窿群组定义
 const DRILL_GROUPS = [
@@ -33,7 +34,8 @@ const DRILL_GROUPS = [
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
     GROUP_ID_2,
-    GROUP_ID_4
+    GROUP_ID_4,
+    GROUP_ID_9
 ]
 
 // 完全静默群组配置
@@ -64,7 +66,7 @@ const DRILL_FORMAT = {
   title: '------Core drill hole Summary------',
   guidelines: [
     '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
-    '-✅❎為中建有冇影安全相,⭕❌為分判有冇影安全相',
+    '-✅❎為中建有冇影安全相，⭕❌為分判有冇影安全相',
     '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
@@ -80,7 +82,7 @@ const EXTERNAL_SCAFFOLDING_FORMAT = {
   title: 'External Scaffolding Work(Permit to work)',
   guidelines: [
     '外牆棚工作許可證填妥及齊簽名視為開工',
-    '✅❎為中建影安全相，⭕❌為分判影安全相',
+    '✅❎為中建安全部，✔️✖️為中建施工部，⭕❌為分判影安全相',
     '收工影工作位置和撤銷許可證才視為工人完全撤離及交回安全部'
   ],
   showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange', ''],
@@ -119,6 +121,7 @@ const GROUP_FORMATS = {
   [GROUP_ID_6]: EXTERNAL_SCAFFOLDING_FORMAT,
   [GROUP_ID_7]: NORMAL_FORMAT,
   [GROUP_ID_8]: DRILL_FORMAT,
+  [GROUP_ID_9]: EXTERNAL_SCAFFOLDING_FORMAT,
   // 未來群組可在此添加自定義格式
   default: NORMAL_FORMAT
 };
@@ -131,6 +134,32 @@ const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
 const LOG_DIR  = path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'whatsapp.log');
 fs.ensureDirSync(LOG_DIR);
+
+// ID 转 Emoji (用于总结: A1 -> A1️⃣)
+function toEmojiId(appId) {
+  if (!appId) return '';
+  // 支持大小写字母，例如 A12 / a12
+  const match = appId.match(/^([A-Z])(\d+)$/i);
+  if (!match) return appId;
+
+  const letter = match[1].toUpperCase();
+  const numStr = match[2];
+  const emojiMap = {
+    '0': '0️⃣',
+    '1': '1️⃣',
+    '2': '2️⃣',
+    '3': '3️⃣',
+    '4': '4️⃣',
+    '5': '5️⃣',
+    '6': '6️⃣',
+    '7': '7️⃣',
+    '8': '8️⃣',
+    '9': '9️⃣'
+  };
+
+  const emojiNum = numStr.split('').map(d => emojiMap[d] || d).join('');
+  return `${letter}${emojiNum}`;
+}
 
 const client = new Client({
   authStrategy: new LocalAuth({
@@ -419,14 +448,17 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
     const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
     // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
     const buildingLetter = building === '未知' ? '' : building.replace('座', '');
-
+    
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
       const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
+      
+      prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
 
-      // 生成前缀（A01-, A02-, B01-, B02- 等）
-      const prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
+      if (groupId === GROUP_ID_9) {
+        prefix = toEmojiId(rec.application_id || '??');
+      }
 
       const fields = {
         location: `${prefix}${rec.location || ''}`,
@@ -733,7 +765,9 @@ client.on('message', async msg => {
       try {
         query = converter(query);
       } catch (error) {
-        console.log(`简繁转换失败: ${error.message}，使用原始输入内容处理工作流`);
+        const errMsg = `简繁转换失败: ${error.message}，使用原始输入内容处理工作流`;
+        console.log(errMsg);
+        appendLog(groupId, errMsg);
       }
 
       const conditions = [
@@ -798,7 +832,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版')) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號')) && groupId == GROUP_ID_9) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
@@ -1056,6 +1090,8 @@ async function sendOTSummary() {
     getOTSummary(GROUP_ID_4);
     getOTSummary(GROUP_ID_7);
     getOTSummary(GROUP_ID_8);
+    getOTSummary(GROUP_ID_9);
+
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
@@ -1064,6 +1100,7 @@ async function sendOTSummary() {
     await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendMessage(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -1073,6 +1110,16 @@ cron.schedule('0 12 * * *', sendTodaySummary);  // 12:00
 cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
+cron.schedule('0 10-19 * * *', async () => {
+  try {
+      await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
+      appendLog(GROUP_ID_9, '每小时总结推送成功');
+  } catch (e) {
+      const errMsg = `每小时总结推送失败: ${e.message}`;
+      console.error(e);
+      appendLog(GROUP_ID_9, errMsg);
+  }
+});
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
 
 
