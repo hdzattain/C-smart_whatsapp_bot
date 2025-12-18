@@ -457,7 +457,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
       prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
 
       if (groupId === GROUP_ID_9) {
-        prefix = toEmojiId(rec.application_id || '??');
+        prefix = toEmojiId(rec.application_id || '??') + '-';
       }
 
       const fields = {
