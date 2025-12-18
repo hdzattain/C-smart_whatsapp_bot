@@ -41,15 +41,11 @@ async function processScaffoldingQuery(query, groupId) {
 
   resetDailyIfNeeded(groupId);
 
-  // === 场景 1: 申请 (Apply) === // 逻辑：生成ID -> 插入DB -> 回写ID -> 返回带ID的成功消息
+  // === 场景 1: 申请 (Apply) ===
+  // 逻辑：先做模板校验 -> 通过后才生成ID -> 插入DB -> 返回带ID的成功消息
   if (/申請|開工|申请|开工/.test(query)) {
-    const newAppId = generateApplicationId(query, groupId);
-    const insertReply = await handleApply(query, groupId, undefined, newAppId); // 复用原有解析逻辑
-    // 如果插入成功（不是错误提示），回写 ID
-    if (!insertReply.includes('不符合模版')) {
-      return `申請成功！\n申請編號：${newAppId}\n\n${insertReply}`;
-    }
-    return insertReply;
+    // applicationId 由 handleApply 在通过模板校验后生成，避免不符合模板也消耗编号
+    return await handleApply(query, groupId, undefined);
   }
 
   // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
@@ -247,7 +243,7 @@ function extractFields(query, fields) {
 // 2. 封装的 Action 函数
 // ============================
 // 1. 申请开工
-async function handleApply(query, groupId, contactPhone, applicationId) {// 修正后的代码
+async function handleApply(query, groupId, contactPhone) {// 修正后的代码
 
   const fields = [
     { name: '日期' },
@@ -275,6 +271,9 @@ async function handleApply(query, groupId, contactPhone, applicationId) {// 修�
   if (!subcontractor || !number || !location || !floor || !process) {
     return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
   }
+  
+  // 通过模板校验后才生成申请编号，避免无效消息消耗编号
+  const applicationId = generateApplicationId(query, groupId);
 
   const timeStr = new Date().toLocaleString('sv-SE', {
     timeZone: 'Asia/Hong_Kong'
@@ -303,9 +302,11 @@ async function handleApply(query, groupId, contactPhone, applicationId) {// 修�
     });
     console.log(`群组id: ${groupId}, 外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
     appendLog(groupId, `外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
-    replyStr = '申請请求完成';
+    replyStr = `申請成功！\n申請編號：${applicationId}`;
   } catch (e) {
-    replyStr = '申請失敗，請重試';
+    replyStr = applicationId
+      ? `申請失敗，請重試 (申請編號：${applicationId})`
+      : '申請失敗，請重試';
     console.log(`群组id: ${groupId}, 外墙群组-申请流程异常信息： ${e.message}`);
     appendLog(groupId, `外墙群组-申请流程异常信息： ${e.message}`);
   }

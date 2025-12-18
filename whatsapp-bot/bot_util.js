@@ -57,13 +57,18 @@ function resetDailyIfNeeded(groupId) {
 
 // 提取楼栋字母 (A座 -> A, Blk A -> A, 默认 -> Z)
 function extractBuildingLetter(text = '') {
+  // text 可能包含多行：只允许从「位置：」所在那一行提取，避免从其它字段误判
+  const locationLine = String(text)
+    .split(/\r?\n/)
+    .find(line => line.includes('位置：'));
+  if (!locationLine) return 'Z';
   const patterns = [
     /([A-Za-z])[座棟]/,                // A座, A棟
     /BLK\s*([A-Za-z])/i,               // Blk A
     /Block\s*([A-Za-z])/i,             // Block A
   ];
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = locationLine.match(pattern);
     if (match) return match[1].toUpperCase();
   }
   return 'Z'; // 默认回落
