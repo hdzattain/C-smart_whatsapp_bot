@@ -60,7 +60,7 @@ function extractBuildingLetter(text = '') {
   // text 可能包含多行：只允许从「位置：」所在那一行提取，避免从其它字段误判
   const locationLine = String(text)
     .split(/\r?\n/)
-    .find(line => line.includes('位置：'));
+    .find(line => line.includes('位置'));
   if (!locationLine) return 'Z';
   const patterns = [
     /([A-Za-z])[座棟]/,                // A座, A棟
