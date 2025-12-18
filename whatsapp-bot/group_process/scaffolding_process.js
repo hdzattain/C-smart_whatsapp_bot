@@ -304,9 +304,7 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
     appendLog(groupId, `外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
     replyStr = `申請成功！\n申請編號：${applicationId}\n\n申請请求完成`;
   } catch (e) {
-    replyStr = applicationId
-      ? `申請失敗，請重試 (申請編號：${applicationId})`
-      : '申請失敗，請重試';
+    replyStr = `申請失敗，請重試`;
     console.log(`群组id: ${groupId}, 外墙群组-申请流程异常信息： ${e.message}`);
     appendLog(groupId, `外墙群组-申请流程异常信息： ${e.message}`);
   }
