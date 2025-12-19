@@ -78,14 +78,9 @@ function extractBuildingLetter(text = '') {
     }
   }
   
-  // 兼容其他模式：A座, A棟
-  const otherPatterns = [
-    /([A-Za-z])[座棟]/,
-  ];
-  for (const pattern of otherPatterns) {
-    const match = locationLine.match(pattern);
-    if (match) return match[1].toUpperCase();
-  }
+  // 如果没有找到 b.*k 模式，直接取字符串中的第一个字母作为楼栋
+  const firstLetterMatch = cleaned.match(/[A-Za-z]/);
+  if (firstLetterMatch) return firstLetterMatch[0].toUpperCase();
   
   return 'Z'; // 默认回落
 }
