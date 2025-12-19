@@ -237,6 +237,71 @@ function extractFields(query, fields) {
   }, {});
 }
 
+// 3、格式化位置字段：前半部分替换为 Blk A，后半部分只去除空格
+function formatLocation(locationText) {
+  if (!locationText) return '';
+  
+  // 1. 找到第一个 b 或 B，然后找到它之后的第一个 k 或 K
+  const bIndex = locationText.search(/[Bb]/i);
+  if (bIndex === -1) {
+    // 兼容其他模式：A座, A棟
+    const otherPatterns = [
+      /([A-Za-z])[座棟]/,
+    ];
+    for (const pattern of otherPatterns) {
+      const match = locationText.match(pattern);
+      if (match) {
+        const buildingLetter = match[1].toUpperCase();
+        // 找到座/棟后面的第一个中文逗号
+        const afterMatch = locationText.substring(match.index + match[0].length);
+        const commaIndex = afterMatch.search(/，/);
+        if (commaIndex !== -1) {
+          const beforePart = `Blk ${buildingLetter}`;
+          const separator = afterMatch[commaIndex];
+          const afterPart = afterMatch.substring(commaIndex + 1).replace(/\s+/g, '');
+          return beforePart + separator + afterPart;
+        }
+        return `Blk ${buildingLetter}`;
+      }
+    }
+    return locationText.replace(/\s+/g, '');
+  }
+  
+  const afterB = locationText.substring(bIndex);
+  const kIndex = afterB.search(/[Kk]/i);
+  if (kIndex === -1) {
+    return locationText.replace(/\s+/g, '');
+  }
+  
+  // 2. 找到 k 之后的第一个字母作为楼栋字母
+  const afterK = afterB.substring(kIndex + 1);
+  const letterMatch = afterK.match(/[A-Za-z]/);
+  if (!letterMatch) {
+    return locationText.replace(/\s+/g, '');
+  }
+  
+  const buildingLetter = letterMatch[0].toUpperCase();
+  const letterIndexInAfterK = letterMatch.index;
+  
+  // 3. 计算字母在原始字符串中的位置
+  const letterIndexInOriginal = bIndex + kIndex + 1 + letterIndexInAfterK;
+  
+  // 4. 从字母位置往后找第一个中文逗号的位置
+  const afterLetter = locationText.substring(letterIndexInOriginal + 1);
+  const commaMatch = afterLetter.match(/，/);
+  
+  if (commaMatch) {
+    // 找到逗号，替换前半部分为 Blk A，后半部分只去除空格
+    const commaIndex = commaMatch.index;
+    const separator = commaMatch[0];
+    const beforePart = `Blk ${buildingLetter}`;
+    const afterPart = afterLetter.substring(commaIndex + 1).replace(/\s+/g, '');
+    return beforePart + separator + afterPart;
+  } else {
+    // 没有找到逗号，整个替换为 Blk A
+    return `Blk ${buildingLetter}`;
+  }
+}
 
 
 // ============================
@@ -275,6 +340,9 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
   // 通过模板校验后才生成申请编号，避免无效消息消耗编号
   const applicationId = generateApplicationId(query, groupId);
 
+  // 格式化位置字段：前半部分替换为 BLK A，后半部分只去除空格
+  const formattedLocation = formatLocation(location);
+
   const timeStr = new Date().toLocaleString('sv-SE', {
     timeZone: 'Asia/Hong_Kong'
   });
@@ -282,7 +350,7 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
     bstudio_create_time: timeStr,
     subcontractor: subcontractor.trim(),
     number: parseInt(number),
-    location: location.trim(),
+    location: formattedLocation,
     floor: floor.trim(),
     process: process.trim(),
     time_range: time_range?.trim() || '0800-1800',
