@@ -57,15 +57,31 @@ function resetDailyIfNeeded(groupId) {
 
 // 提取楼栋字母 (A座 -> A, Blk A -> A, 默认 -> Z)
 function extractBuildingLetter(text = '') {
-  const patterns = [
-    /([A-Za-z])[座棟]/,                // A座, A棟
-    /BLK\s*([A-Za-z])/i,               // Blk A
-    /Block\s*([A-Za-z])/i,             // Block A
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) return match[1].toUpperCase();
+  // text 可能包含多行：只允许从「位置：」所在那一行提取，避免从其它字段误判
+  const locationLine = String(text)
+    .split(/\r?\n/)
+    .find(line => line.includes('位置'));
+  
+  // 1. 去掉所有特殊字符（保留字母、数字、中文字符）
+  const cleaned = locationLine.replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, '');
+  
+  // 2. 找到第一个 b 或 B，然后找到它之后的第一个 k 或 K，去掉左侧部分
+  const bIndex = cleaned.search(/[Bb]/i);
+  if (bIndex !== -1) {
+    const afterB = cleaned.substring(bIndex);
+    const kIndex = afterB.search(/[Kk]/i);
+    if (kIndex !== -1) {
+      const afterBlk = afterB.substring(kIndex + 1);
+      // 3. 在剩余字符串中找第一个字母作为楼栋字母
+      const letterMatch = afterBlk.match(/[A-Za-z]/);
+      if (letterMatch) return letterMatch[0].toUpperCase();
+    }
   }
+  
+  // 如果没有找到 b.*k 模式，直接取字符串中的第一个字母作为楼栋
+  const firstLetterMatch = cleaned.match(/[A-Za-z]/);
+  if (firstLetterMatch) return firstLetterMatch[0].toUpperCase();
+  
   return 'Z'; // 默认回落
 }
 

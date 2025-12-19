@@ -41,15 +41,11 @@ async function processScaffoldingQuery(query, groupId) {
 
   resetDailyIfNeeded(groupId);
 
-  // === 场景 1: 申请 (Apply) === // 逻辑：生成ID -> 插入DB -> 回写ID -> 返回带ID的成功消息
+  // === 场景 1: 申请 (Apply) ===
+  // 逻辑：先做模板校验 -> 通过后才生成ID -> 插入DB -> 返回带ID的成功消息
   if (/申請|開工|申请|开工/.test(query)) {
-    const newAppId = generateApplicationId(query, groupId);
-    const insertReply = await handleApply(query, groupId, undefined, newAppId); // 复用原有解析逻辑
-    // 如果插入成功（不是错误提示），回写 ID
-    if (!insertReply.includes('不符合模版')) {
-      return `申請成功！\n申請編號：${newAppId}\n\n${insertReply}`;
-    }
-    return insertReply;
+    // applicationId 由 handleApply 在通过模板校验后生成，避免不符合模板也消耗编号
+    return await handleApply(query, groupId, undefined);
   }
 
   // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
@@ -241,13 +237,77 @@ function extractFields(query, fields) {
   }, {});
 }
 
+// 3、格式化位置字段：前半部分替换为 Blk A，后半部分只去除空格
+function formatLocation(locationText) {
+  if (!locationText) return '';
+  
+  // 1. 找到第一个 b 或 B，然后找到它之后的第一个 k 或 K
+  const bIndex = locationText.search(/[Bb]/i);
+  if (bIndex !== -1) {
+    const afterB = locationText.substring(bIndex);
+    const kIndex = afterB.search(/[Kk]/i);
+    if (kIndex !== -1) {
+      // 2. 找到 k 之后的第一个字母作为楼栋字母
+      const afterK = afterB.substring(kIndex + 1);
+      const letterMatch = afterK.match(/[A-Za-z]/);
+      if (letterMatch) {
+        const buildingLetter = letterMatch[0].toUpperCase();
+        const letterIndexInAfterK = letterMatch.index;
+        
+        // 3. 计算字母在原始字符串中的位置
+        const letterIndexInOriginal = bIndex + kIndex + 1 + letterIndexInAfterK;
+        
+        // 4. 从字母位置往后找第一个空格或中英文逗号的位置
+        const afterLetter = locationText.substring(letterIndexInOriginal + 1);
+        const separatorMatch = afterLetter.match(/[，,\s]/);
+        
+        if (separatorMatch) {
+          // 找到分隔符，替换前半部分为 Blk A，后半部分只去除空格
+          const separatorIndex = separatorMatch.index;
+          const separator = separatorMatch[0];
+          const beforePart = `Blk ${buildingLetter}`;
+          const afterPart = afterLetter.substring(separatorIndex + 1).replace(/\s+/g, '');
+          return beforePart + separator + afterPart;
+        } else {
+          // 没有找到分隔符，整个替换为 Blk A
+          return `Blk ${buildingLetter}`;
+        }
+      }
+    }
+  }
+  
+  // 回退逻辑：直接取字符串中的第一个字母作为楼栋
+  const firstLetterMatch = locationText.match(/[A-Za-z]/);
+  if (firstLetterMatch) {
+    const buildingLetter = firstLetterMatch[0].toUpperCase();
+    const letterIndex = firstLetterMatch.index;
+    
+    // 从字母位置往后找第一个空格或中英文逗号的位置
+    const afterLetter = locationText.substring(letterIndex + 1);
+    const separatorMatch = afterLetter.match(/[，,\s]/);
+    
+    if (separatorMatch) {
+      // 找到分隔符，替换前半部分为 Blk A，后半部分只去除空格
+      const separatorIndex = separatorMatch.index;
+      const separator = separatorMatch[0];
+      const beforePart = `Blk ${buildingLetter}`;
+      const afterPart = afterLetter.substring(separatorIndex + 1).replace(/\s+/g, '');
+      return beforePart + separator + afterPart;
+    } else {
+      // 没有找到分隔符，整个替换为 Blk A
+      return `Blk ${buildingLetter}`;
+    }
+  }
+  
+  return locationText.replace(/\s+/g, '');
+}
 
 
 // ============================
 // 2. 封装的 Action 函数
 // ============================
 // 1. 申请开工
-async function handleApply(query, groupId, contactPhone, applicationId) {// 修正后的代码
+async function handleApply(query, groupId, contactPhone) {// 修正后的代码
 
   const fields = [
     { name: '日期' },
@@ -275,6 +335,12 @@ async function handleApply(query, groupId, contactPhone, applicationId) {// 修�
   if (!subcontractor || !number || !location || !floor || !process) {
     return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
   }
+  
+  // 通过模板校验后才生成申请编号，避免无效消息消耗编号
+  const applicationId = generateApplicationId(query, groupId);
+
+  // 格式化位置字段：前半部分替换为 BLK A，后半部分只去除空格
+  const formattedLocation = formatLocation(location);
 
   const timeStr = new Date().toLocaleString('sv-SE', {
     timeZone: 'Asia/Hong_Kong'
@@ -283,7 +349,7 @@ async function handleApply(query, groupId, contactPhone, applicationId) {// 修�
     bstudio_create_time: timeStr,
     subcontractor: subcontractor.trim(),
     number: parseInt(number),
-    location: location.trim(),
+    location: formattedLocation,
     floor: floor.trim(),
     process: process.trim(),
     time_range: time_range?.trim() || '0800-1800',
@@ -303,9 +369,9 @@ async function handleApply(query, groupId, contactPhone, applicationId) {// 修�
     });
     console.log(`群组id: ${groupId}, 外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
     appendLog(groupId, `外墙棚架申请流程响应信息： ${JSON.stringify(response.data)}`);
-    replyStr = '申請请求完成';
+    replyStr = `申請成功！\n申請編號：${applicationId}\n\n申請请求完成`;
   } catch (e) {
-    replyStr = '申請失敗，請重試';
+    replyStr = `申請失敗，請重試`;
     console.log(`群组id: ${groupId}, 外墙群组-申请流程异常信息： ${e.message}`);
     appendLog(groupId, `外墙群组-申请流程异常信息： ${e.message}`);
   }
