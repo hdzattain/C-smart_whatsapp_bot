@@ -425,7 +425,7 @@ function generateSummaryDetails(data, formatConfig, groupId) {
     if (formatConfig.showFields.includes('xiaban')) {
       output.push(fields.xiaban);
     }
-    return output.join('\n');
+    return output;
   });
 
   return details;
@@ -471,11 +471,11 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
         xiaban: xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0)
       };
 
-      const recordLine = `${fields.location}，${fields.floor}，${fields.subcontractor}，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
+      const recordLine = `${fields.location}，${fields.floor}，*${fields.subcontractor}*，${fields.number}人，工序:${fields.process}，時間:${fields.time_range}`;
       const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
       return `${recordLine}\n${safetyLine}`;
     });
-    return `${building}\n${buildingDetails.join('\n')}`;
+    return `\n*${building}*\n\n${buildingDetails.join('\n')}`;
   });
 
   return details;
