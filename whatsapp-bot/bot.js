@@ -454,11 +454,7 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
       const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
       
-      prefix = `${buildingLetter}${String(index + 1).padStart(2, '0')}-`;
-
-      if (groupId === GROUP_ID_9) {
-        prefix = toEmojiId(rec.application_id || '??') + '-';
-      }
+      prefix = toEmojiId(rec.application_id || '??') + '-';
 
       const fields = {
         location: `${prefix}${rec.location || ''}`,
@@ -832,7 +828,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號')) && groupId == GROUP_ID_9) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號') && EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId))) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
