@@ -7,13 +7,27 @@ from datetime import datetime, date
 import uuid
 from dateutil import parser as date_parser
 from typing import Optional
+import imaplib
+import email
+from email.header import decode_header
+from email.utils import parsedate_to_datetime
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.header import Header
+from html.parser import HTMLParser
+from html import unescape
+import os
+from zhconv import convert
+import json
 
 app = Flask(__name__)
 
 # --- 外墙棚架群组定义 ---
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
-    '120363372181860061@g.us'
+    '120363372181860061@g.us',
+    '120363420660094468@g.us'
 ]
 
 # --- 打窿群组定义 ---
@@ -39,6 +53,27 @@ FIELDS = [
     "location", "number", "floor", "morning",
     "afternoon", "xiaban", "subcontractor", "part_leave_number",
     "process", "time_range", "building", "update_history", "update_safety_history", "update_construct_history", "safety_flag", "application_id"
+]
+
+# --- jiaodika 表配置 ---
+JIAODIKA_TABLE = "jiaodika"
+JIAODIKA_FIELDS = [
+    "id",
+    "bstudio_create_time",
+    "file",
+    "gongchengfenlei",
+    "gongxu",
+    "zhuyaocailiao",
+    "gongjushebei",
+    "gongrenzige",
+    "caozuogongyi",
+    "yanshoubiaozhun",
+    "anquanshixiang",
+    "huanbaoshixiang",
+    "drawings",
+    "keydiagrams",
+    "mockups",
+    "updated_at",
 ]
 
 
@@ -68,10 +103,448 @@ def normalize_date(value):
         return None
 
 
+# ==========================
+# Mail Utilities (IMAP/SMTP)
+# ==========================
+
+def _json_error(message: str, status_code: int = 400, *, code: str = "bad_request", detail: Optional[str] = None):
+    payload = {"ok": False, "error": message, "code": code}
+    if detail:
+        payload["detail"] = detail
+    return jsonify(payload), status_code
+
+
+def _env_str(key: str) -> Optional[str]:
+    v = os.getenv(key)
+    if v is None:
+        return None
+    v = v.strip()
+    return v if v else None
+
+
+def _env_int(key: str) -> Optional[int]:
+    v = _env_str(key)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+# 你说先不放环境变量：这里提供“代码内默认值”
+# 如需以后改回环境变量，只要把 env_* 放到 or 的前面即可
+DEFAULT_IMAP_SERVER = "owahk.cohl.com"
+DEFAULT_IMAP_PORT = 993
+DEFAULT_SMTP_SERVER = "owahk.cohl.com"
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_SECURITY = "starttls"  # starttls / ssl / plain
+
+
+def _require_str(data: dict, key: str, *, aliases=None) -> str:
+    keys = [key] + (list(aliases) if aliases else [])
+    for k in keys:
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    raise ValueError(f"缺少参数: {key}")
+
+
+def _require_int(data: dict, key: str, *, aliases=None) -> int:
+    keys = [key] + (list(aliases) if aliases else [])
+    for k in keys:
+        if k in data and data.get(k) is not None:
+            try:
+                return int(data.get(k))
+            except Exception:
+                raise ValueError(f"参数格式错误: {key} 必须是整数")
+    raise ValueError(f"缺少参数: {key}")
+
+
+def _parse_smtp_security(value: Optional[str], port: int) -> str:
+    """
+    返回: 'starttls' | 'ssl' | 'plain'
+    - 默认优先: 465->ssl, 587->starttls, 其他->starttls
+    """
+    v = (value or "").strip().lower()
+    if v in ("ssl", "smtps", "tls"):
+        return "ssl"
+    if v in ("starttls", "upgrade"):
+        return "starttls"
+    if v in ("plain", "none"):
+        return "plain"
+    if port == 465:
+        return "ssl"
+    if port == 587:
+        return "starttls"
+    return "starttls"
+
+
+def _decode_mime_header(value):
+    if not value:
+        return ""
+    try:
+        parts = decode_header(value)
+        decoded = []
+        for part, enc in parts:
+            if isinstance(part, bytes):
+                # 对于 bytes，总是使用智能解码（尝试多种编码）
+                # 即使 decode_header 返回了编码信息，也可能不准确
+                decoded.append(_decode_payload_smart(part, enc))
+            else:
+                # 如果已经是字符串，但可能编码不对，尝试重新编码再解码
+                # 先转成 bytes（假设是 latin1，因为它能无损转换任何字节）
+                try:
+                    part_bytes = str(part).encode('latin1')
+                    decoded.append(_decode_payload_smart(part_bytes, None))
+                except Exception:
+                    decoded.append(str(part))
+        return "".join(decoded)
+    except Exception:
+        # 如果 decode_header 失败，尝试直接智能解码整个值
+        try:
+            if isinstance(value, bytes):
+                return _decode_payload_smart(value, None)
+            elif isinstance(value, str):
+                # 尝试将字符串转成 bytes 再解码
+                return _decode_payload_smart(value.encode('latin1'), None)
+        except Exception:
+            pass
+        return str(value)
+
+
+class _HTMLToTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._chunks = []
+
+    def handle_data(self, data):
+        if data:
+            self._chunks.append(data)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("br",):
+            self._chunks.append("\n")
+        elif tag in ("p", "div", "tr", "li"):
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("p", "div", "tr", "li"):
+            self._chunks.append("\n")
+
+    def get_text(self):
+        text = unescape("".join(self._chunks))
+        lines = [ln.strip() for ln in text.splitlines()]
+        return "\n".join([ln for ln in lines if ln != ""])
+
+
+def _html_to_text(html):
+    parser = _HTMLToTextParser()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception:
+        return html or ""
+    return parser.get_text()
+
+
+def _decode_payload_smart(payload: bytes, declared_charset: Optional[str] = None) -> str:
+    """
+    智能解码邮件 payload，尝试多种编码（优先声明编码，再试常见中文编码）。
+    """
+    if payload is None:
+        return ""
+    
+    # 常见编码列表（按优先级）
+    encodings = []
+    if declared_charset:
+        encodings.append(declared_charset.lower())
+    encodings.extend(["utf-8", "gbk", "gb2312", "big5", "latin1", "iso-8859-1"])
+    
+    # 去重但保持顺序
+    seen = set()
+    unique_encodings = []
+    for enc in encodings:
+        if enc not in seen:
+            seen.add(enc)
+            unique_encodings.append(enc)
+    
+    # 逐个尝试解码
+    for enc in unique_encodings:
+        try:
+            return payload.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    
+    # 全部失败，用 errors="ignore" 兜底
+    return payload.decode("utf-8", errors="ignore")
+
+
+def _extract_mail_body_plain(msg):
+    """
+    返回纯文本：
+    - 优先 text/plain
+    - 否则取第一个 text/*，若为 text/html 则转纯文本
+    """
+    if msg.is_multipart():
+        fallback_text = ""
+        fallback_is_html = False
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdisp = str(part.get("Content-Disposition") or "")
+            if "attachment" in cdisp.lower():
+                continue
+
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            declared_charset = part.get_content_charset()
+            text = _decode_payload_smart(payload, declared_charset)
+
+            if ctype == "text/plain":
+                return text
+            if ctype.startswith("text/") and not fallback_text:
+                fallback_text = text
+                fallback_is_html = (ctype == "text/html")
+        return _html_to_text(fallback_text) if fallback_is_html else fallback_text
+
+    payload = msg.get_payload(decode=True)
+    if payload is None:
+        return ""
+    declared_charset = msg.get_content_charset()
+    text = _decode_payload_smart(payload, declared_charset)
+    return _html_to_text(text) if msg.get_content_type() == "text/html" else text
+
+
+def _as_int(v, default):
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _parse_mail_date_to_iso(date_value: str) -> Optional[str]:
+    """
+    解析邮件头 Date 为 ISO8601 字符串。
+    失败则返回 None。
+    """
+    try:
+        dt = parsedate_to_datetime(date_value)
+        if dt is None:
+            return None
+        return dt.isoformat()
+    except Exception:
+        return None
+
+
+def receive_emails_imap(email_account, email_password, imap_server, imap_port, receive_number=20):
+    result = []
+    mail = None
+    try:
+        n = _as_int(receive_number, 20)
+        if n <= 0:
+            n = 1
+        if n > 200:
+            n = 200
+
+        mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        mail.login(email_account, email_password)
+        mail.select("inbox")
+
+        # 更简单、稳定的“最新在前”实现：UID SEARCH + 本地按 UID 倒序取前 N 封
+        # - 不依赖服务器 SORT 扩展（很多服务器不支持，会 BAD/NO）
+        # - UID 可能不连续（删除/服务器分配策略），但通常单调递增；数字越大越新
+        status, data = mail.uid("search", None, "ALL")
+        if status != "OK":
+            raise RuntimeError(f"IMAP UID SEARCH 返回非 OK: {status}")
+
+        uids = (data[0] or b"").split()
+        if not uids:
+            return {"result": []}
+
+        latest_uids = sorted(uids, key=lambda x: int(x), reverse=True)[:n]
+
+        for uid in latest_uids:
+            status, msg_data = mail.uid("fetch", uid, "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+
+            msg = email.message_from_bytes(msg_data[0][1])
+            subject = _decode_mime_header(msg.get("Subject"))
+            from_addr = _decode_mime_header(msg.get("From"))
+            date_header = _decode_mime_header(msg.get("Date"))
+            date_iso = _parse_mail_date_to_iso(date_header) if date_header else None
+            body = _extract_mail_body_plain(msg)
+
+            result.append(
+                {
+                    "id": uid.decode(errors="ignore") if isinstance(uid, (bytes, bytearray)) else str(uid),
+                    "from": from_addr,
+                    "subject": subject,
+                    "date": date_header,
+                    "date_iso": date_iso,
+                    "body": body,
+                }
+            )
+    except imaplib.IMAP4.error as e:
+        raise RuntimeError(f"IMAP 登录/读取失败: {str(e)}") from e
+    except Exception as e:
+        raise RuntimeError(f"IMAP 读取失败: {str(e)}") from e
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+    return {"result": result}
+
+
+def send_email_smtp(
+    email_account,
+    email_password,
+    smtp_server,
+    smtp_port,
+    to_email,
+    subject,
+    content,
+    content_type="text/plain",
+    smtp_security: Optional[str] = None,
+):
+    """
+    SMTP 发送邮件（邮箱+密码登录），支持 text/plain 或 text/html。
+    """
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"] = Header(email_account, "utf-8")
+        msg["To"] = Header(to_email, "utf-8")
+        msg["Subject"] = Header(subject or "", "utf-8")
+
+        ctype = "plain" if (content_type or "").lower() in ("text/plain", "plain") else "html"
+        part = MIMEText(content or "", ctype, "utf-8")
+        msg.attach(part)
+
+        security = _parse_smtp_security(smtp_security, int(smtp_port))
+        if security == "ssl":
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=20) as server:
+                server.ehlo()
+                server.login(email_account, email_password)
+                server.sendmail(email_account, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
+                server.ehlo()
+                if security == "starttls":
+                    # 兼容部分服务器：先 ehlo 再 starttls 再 ehlo
+                    server.starttls()
+                    server.ehlo()
+                server.login(email_account, email_password)
+                server.sendmail(email_account, [to_email], msg.as_string())
+        return {"ok": True}
+    except Exception as e:
+        raise RuntimeError(f"SMTP 发送失败: {str(e)}") from e
+
+
 # --- Routes ---
 @app.route('/')
 def index():
     return "API is running."
+
+
+# --------------------------
+# Mail Routes (IMAP/SMTP)
+# --------------------------
+@app.route("/mail/health", methods=["GET"])
+def mail_health():
+    return jsonify({"ok": True})
+
+
+@app.route("/mail/receive", methods=["GET", "POST"])
+def mail_receive():
+    # 隐私要求：不允许使用 URL query 传任何参数（避免进 nginx/flask 日志）
+    if request.args:
+        return _json_error("隐私要求：/mail/receive 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = _require_str(data, "email_account")
+        email_password = _require_str(data, "email_password")
+        # 生产推荐：server/port 从环境变量读取，调用方无需传
+        imap_server = data.get("IMAP_SERVER") or data.get("imap_server") or DEFAULT_IMAP_SERVER
+        imap_port = data.get("IMAP_PORT") or data.get("imap_port") or DEFAULT_IMAP_PORT
+        if not imap_server:
+            raise ValueError("缺少参数: IMAP_SERVER（建议用环境变量 DEFAULT_IMAP_SERVER 配置）")
+        if imap_port is None:
+            raise ValueError("缺少参数: IMAP_PORT（建议用环境变量 DEFAULT_IMAP_PORT 配置）")
+        imap_server = str(imap_server).strip()
+        imap_port = int(imap_port)
+        receive_number = _as_int(data.get("receive_number", 20), 20)
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    try:
+        res = receive_emails_imap(
+            email_account=email_account,
+            email_password=email_password,
+            imap_server=imap_server,
+            imap_port=imap_port,
+            receive_number=receive_number,
+        )
+        return jsonify({"ok": True, **res})
+    except Exception as e:
+        # 不回显账号/密码，仅回显错误原因
+        return _json_error("收取邮件失败", 502, code="mail_receive_failed", detail=str(e))
+
+
+@app.route("/mail/send", methods=["POST"])
+def mail_send():
+    # 隐私要求：不允许使用 URL query 传任何参数（避免进 nginx/flask 日志）
+    if request.args:
+        return _json_error("隐私要求：/mail/send 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = _require_str(data, "email_account")
+        email_password = _require_str(data, "email_password")
+        # 生产推荐：server/port 从环境变量读取，调用方无需传
+        smtp_server = data.get("SMTP_SERVER") or data.get("smtp_server") or DEFAULT_SMTP_SERVER
+        smtp_port = data.get("SMTP_PORT") or data.get("smtp_port") or DEFAULT_SMTP_PORT
+        if not smtp_server:
+            raise ValueError("缺少参数: SMTP_SERVER（建议用环境变量 DEFAULT_SMTP_SERVER 配置）")
+        if smtp_port is None:
+            raise ValueError("缺少参数: SMTP_PORT（建议用环境变量 DEFAULT_SMTP_PORT 配置）")
+        smtp_server = str(smtp_server).strip()
+        smtp_port = int(smtp_port)
+        to_email = _require_str(data, "to", aliases=["to_email", "recipient"])
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    subject = data.get("subject", "") or ""
+    content = data.get("content", "") or ""
+    content_type = data.get("content_type", "text/plain") or "text/plain"
+    smtp_security = data.get("smtp_security") or DEFAULT_SMTP_SECURITY  # 可选: starttls / ssl / plain
+
+    try:
+        res = send_email_smtp(
+            email_account=email_account,
+            email_password=email_password,
+            smtp_server=smtp_server,
+            smtp_port=smtp_port,
+            to_email=to_email,
+            subject=subject,
+            content=content,
+            content_type=content_type,
+            smtp_security=smtp_security,
+        )
+        return jsonify(res)
+    except Exception as e:
+        return _json_error("发送邮件失败", 502, code="mail_send_failed", detail=str(e))
 
 
 @app.route("/records", methods=["POST"])
@@ -563,7 +1036,10 @@ def validate_scaffold_group_fields(filters):
         dict or None: 如果校验失败返回错误信息字典，否则返回None
     """
     # 外墙棚架群组校验必填字段
-    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    app_id = filters.get("application_id")
+    if app_id != None or app_id != "": 
+        return None
+    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS 
     required = ["subcontractor", "process"]
 
     name_dict = {
@@ -808,6 +1284,188 @@ def show_columns():
     sql = f"SHOW COLUMNS FROM `{table}`"
     rows = execute_query(sql, fetch=True)
     return jsonify({"columns": [row["Field"] for row in rows]})
+
+
+
+@app.route("/convert", methods=["POST"])
+def convert_text():
+    """
+    中文转换接口
+    接收原始文本作为 body，target 通过 query 参数或 header 指定（默认 zh-hant）
+    支持的 target: zh-cn, zh-tw, zh-hk, zh-sg, zh-hans, zh-hant
+    返回: {"ok": True, "result": "转换后的文本"}
+    """
+    # 直接读取原始文本内容
+    text = request.get_data(as_text=True)
+    if not text:
+        return _json_error("缺少文本内容", 400)
+    
+    # 从 query 参数或 header 获取 target，默认 zh-hant
+    target = request.args.get("target") or request.headers.get("X-Target", "zh-hant")
+    
+    valid_targets = ["zh-cn", "zh-tw", "zh-hk", "zh-sg", "zh-hans", "zh-hant"]
+    if target not in valid_targets:
+        return _json_error(
+            f"参数 target 无效，支持的值: {', '.join(valid_targets)}", 
+            400,
+            code="invalid_target"
+        )
+    
+    try:
+        result = convert(text, target)
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return _json_error("转换失败", 500, code="convert_failed", detail=str(e))
+
+
+# ==========================
+# jiaodika 表：查询 & 更新
+# ==========================
+
+
+@app.route("/jiaodika", methods=["GET"])
+def list_jiaodika():
+    """
+    查询 jiaodika 表
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 仅支持已知字段过滤（JIAODIKA_FIELDS）
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in JIAODIKA_FIELDS:
+            if k == "bstudio_create_time" and v:
+                # 支持传 YYYY-MM-DD，按一天范围查
+                try:
+                    dt = datetime.strptime(v[:10], "%Y-%m-%d")
+                    start = dt.strftime("%Y-%m-%d 00:00:00")
+                    end = dt.strftime("%Y-%m-%d 23:59:59")
+                    conditions.append("`bstudio_create_time` BETWEEN %s AND %s")
+                    params.extend([start, end])
+                    continue
+                except Exception:
+                    # 解析失败则按等值匹配
+                    pass
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{JIAODIKA_TABLE}` {where} ORDER BY `id`"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
+
+def _insert_one_jiaodika(data: dict):
+    """
+    插入一条 jiaodika 记录
+    - 允许部分字段缺省，只插入提供的字段
+    - 自动填充 bstudio_create_time / updated_at（如未提供）
+    """
+    if not isinstance(data, dict):
+        return {"error": "每条记录必须是 JSON 对象"}
+
+    # 自动时间
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    record = {}
+    for k in JIAODIKA_FIELDS:
+        if k == "id":
+            # 一般由数据库自增，如需手动传入也允许
+            if "id" in data:
+                record["id"] = data.get("id")
+            continue
+        if k == "bstudio_create_time":
+            record[k] = data.get(k) or now_str
+            continue
+        if k == "updated_at":
+            record[k] = data.get(k) or now_str
+            continue
+        if k in data:
+            record[k] = data.get(k)
+
+    # 只插入有值的字段
+    cols = []
+    vals = []
+    for k, v in record.items():
+        if v is not None:
+            cols.append(f"`{k}`")
+            vals.append(v)
+
+    if not cols:
+        return {"error": "没有可插入字段"}
+
+    placeholders = ", ".join(["%s"] * len(cols))
+    cols_sql = ", ".join(cols)
+    sql = f"INSERT INTO `{JIAODIKA_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+
+    try:
+        affected = execute_query(sql, tuple(vals))
+        return {"status": "ok", "affected_rows": affected}
+    except Exception as e:
+        return {"error": "插入失败", "detail": str(e)}
+
+
+@app.route("/jiaodika", methods=["POST"])
+def create_jiaodika():
+    """
+    新增 jiaodika 记录
+    - 支持单条：body 为 JSON 对象
+    - 支持批量：body 为 JSON 数组
+    """
+    data = request.get_json(force=True)
+
+    # 批量
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_jiaodika(rec)
+            results.append(res)
+        # 有错误时返回 207，和 /records 接口风格保持一致
+        has_error = any(isinstance(r, dict) and r.get("error") for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    # 单条
+    res = _insert_one_jiaodika(data)
+    if isinstance(res, dict) and res.get("error"):
+        # 和上面 /records 保持类似语义，这里直接 200 兼容现有调用方式
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+@app.route("/jiaodika/<int:record_id>", methods=["PUT"])
+def update_jiaodika(record_id):
+    """
+    按 id 更新 jiaodika 表
+    - body 为要更新的字段，忽略 id
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    updates = [f"`{k}`=%s" for k in data if k in JIAODIKA_FIELDS and k != "id"]
+    if not updates:
+        return jsonify({"error": "无可更新字段"}), 400
+
+    sql = f"UPDATE `{JIAODIKA_TABLE}` SET {', '.join(updates)} WHERE `id`=%s"
+    params = tuple(data[k] for k in data if k in JIAODIKA_FIELDS and k != "id") + (record_id,)
+
+    affected = execute_query(sql, params)
+    if affected == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "updated_id": record_id})
+
+
+
+
+
+
 
 
 if __name__ == "__main__":
