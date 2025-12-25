@@ -30,7 +30,7 @@ function extractApplicationId(text) {
 // 外墙棚架工作流处理主函数
 // ============================
 
-async function processScaffoldingQuery(query, groupId) {
+async function processScaffoldingQuery(query, groupId, contactPhone) {
   try { query = converter(query); } catch (e) {}
 
   // 忽略总结消息
@@ -45,14 +45,14 @@ async function processScaffoldingQuery(query, groupId) {
   // 逻辑：先做模板校验 -> 通过后才生成ID -> 插入DB -> 返回带ID的成功消息
   if (/申請|開工|申请|开工/.test(query)) {
     // applicationId 由 handleApply 在通过模板校验后生成，避免不符合模板也消耗编号
-    return await handleApply(query, groupId, undefined);
+    return await handleApply(query, groupId);
   }
 
   // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
   if (appId) {
     // 安全相
     if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
-      return await handleSafetyById(appId, groupId);
+      return await handleSafetyById(appId, groupId, contactPhone);
     }
     // 撤离
     if (/撤離|撤离|收工|放工/.test(query)) {
@@ -73,11 +73,15 @@ async function processScaffoldingQuery(query, groupId) {
   return "未匹配到工作流";
 }
 
-async function handleSafetyById(appId, groupId) {
+async function handleSafetyById(appId, groupId, contactPhone) {
   // 根据需求，只要有编号+唤醒词，其他不填也没问题。// 我们只更新 safety_flag，如果用户补了时间等信息，这里暂不解析（为了"快"），// 如需解析非必填字段可在此处正则提取。此处按需求"其他字段不填/填错都没问题"处理。
+  const senderType = getSenderType(contactPhone, groupId);
   const data = {
     where: { application_id: appId, group_id: groupId },
-    set: { safety_flag: 1 }
+    set: {
+      safety_flag: 1,
+      sender_type: senderType,
+    }
   };
   try {
     const res = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);

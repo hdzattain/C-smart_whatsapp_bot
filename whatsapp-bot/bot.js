@@ -1063,7 +1063,6 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
-    getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
     getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -1072,7 +1071,6 @@ async function sendTodaySummary() {
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
@@ -1106,6 +1104,16 @@ cron.schedule('0 12 * * *', sendTodaySummary);  // 12:00
 cron.schedule('0 14 * * *', sendTodaySummary);  // 14:00
 cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
+cron.schedule('0 10-19 * * *', async () => {
+  try {
+      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
+      appendLog(GROUP_ID_4, '每小时总结推送成功');
+  } catch (e) {
+      const errMsg = `每小时总结推送失败: ${e.message}`;
+      console.error(e);
+      appendLog(GROUP_ID_4, errMsg);
+  }
+});
 cron.schedule('0 10-19 * * *', async () => {
   try {
       await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙

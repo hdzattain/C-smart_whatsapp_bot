@@ -13,7 +13,8 @@ app = Flask(__name__)
 # --- 外墙棚架群组定义 ---
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
-    '120363372181860061@g.us'
+    '120363372181860061@g.us',
+    '120363420660094468@g.us'
 ]
 
 # --- 打窿群组定义 ---
@@ -563,7 +564,10 @@ def validate_scaffold_group_fields(filters):
         dict or None: 如果校验失败返回错误信息字典，否则返回None
     """
     # 外墙棚架群组校验必填字段
-    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
+    app_id = filters.get("application_id")
+    if app_id != None or app_id != "": 
+        return None
+    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS 
     required = ["subcontractor", "process"]
 
     name_dict = {
