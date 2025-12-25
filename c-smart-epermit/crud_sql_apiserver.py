@@ -565,9 +565,9 @@ def validate_scaffold_group_fields(filters):
     """
     # 外墙棚架群组校验必填字段
     app_id = filters.get("application_id")
-    if app_id != None or app_id != "": 
+    if app_id is not None and app_id != "":
         return None
-    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS 
+    is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
     required = ["subcontractor", "process"]
 
     name_dict = {
