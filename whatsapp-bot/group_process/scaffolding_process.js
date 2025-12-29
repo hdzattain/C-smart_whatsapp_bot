@@ -233,10 +233,27 @@ function normalizeQuery(query, fields) {
 // 2、匹配字段的正则表达式
 function extractFields(query, fields) {
   return fields.reduce((result, field) => {
-    const match = field.regex
-      ? query.match(field.regex)
-      : query.match(new RegExp(`${field.name}[：:]\\s*([^\\n\\r]+)`));
-    result[field.name] = match ? match[1] : null;
+    if (field.regex) {
+      const match = query.match(field.regex);
+      result[field.name] = match ? match[1] : null;
+    } else {
+      // 按行匹配，确保只匹配当前行的内容
+      const lines = query.split(/\r?\n/);
+      let matched = false;
+      for (const line of lines) {
+        const pattern = new RegExp(`^${field.name}[：:]\\s*(.*)$`);
+        const match = line.match(pattern);
+        if (match) {
+          const value = match[1].trim();
+          result[field.name] = value || null;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        result[field.name] = null;
+      }
+    }
     return result;
   }, {});
 }
@@ -336,8 +353,17 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
   const process = matches['工序'];
   const time_range = matches['時間'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
+  // 检查必填字段（日期和时间不是必填）
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   
   // 通过模板校验后才生成申请编号，避免无效消息消耗编号
@@ -405,8 +431,17 @@ async function handleSafety(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.safety;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
 
   const data = {
@@ -462,8 +497,17 @@ async function handleLeave(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   const data = {
     where: {
@@ -517,8 +561,17 @@ async function handleDelete(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   const data = {
     subcontractor: subcontractor.trim(),
