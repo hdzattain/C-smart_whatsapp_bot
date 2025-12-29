@@ -1130,5 +1130,3 @@ cron.schedule('0 10-19 * * *', async () => {
   }
 });
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
-
-
