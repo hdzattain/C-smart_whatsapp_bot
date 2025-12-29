@@ -691,7 +691,12 @@ client.on('message', async msg => {
       if (media) {
         const ext = mime.extension(media.mimetype) || 'jpg';
         const filename = `img_${Date.now()}.${ext}`;
-        const filepath = path.join(TMP_DIR, filename);
+        // 保存到群组文件夹img目录下的日期文件夹
+        const groupDir = path.join(LOG_DIR, groupId || 'default');
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const imgDir = path.join(groupDir, 'img', dateStr);
+        ensureDir(imgDir);
+        const filepath = path.join(imgDir, filename);
         await fs.writeFile(filepath, media.data, 'base64');
         console.log(`图片已保存: ${filepath}`);
         appendLog(groupId, `图片已保存: ${filepath}`);
