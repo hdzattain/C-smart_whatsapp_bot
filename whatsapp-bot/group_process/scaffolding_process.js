@@ -366,11 +366,37 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
            missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   
-  // 通过模板校验后才生成申请编号，避免无效消息消耗编号
-  const applicationId = generateApplicationId(query, groupId);
-
   // 格式化位置字段：前半部分替换为 BLK A，后半部分只去除空格
   const formattedLocation = formatLocation(location);
+  
+  // 检查是否已存在相同记录
+  try {
+    const checkRes = await axios.get(`${CRUD_API_HOST}/records/today`, {
+      params: {
+        group_id: groupId,
+        subcontractor: subcontractor.trim(),
+        number: parseInt(number),
+        location: formattedLocation,
+        floor: floor.trim(),
+        process: process.trim()
+      }
+    });
+    
+    if (checkRes.data && checkRes.data.length > 0 && checkRes.data[0].application_id) {
+      const existingAppId = checkRes.data[0].application_id;
+      console.log(`检测到重复记录，申请编号: ${existingAppId}`);
+      appendLog(groupId, `检测到重复记录，申请编号: ${existingAppId}`);
+      return `已經申請過相同記錄，申請編號爲${existingAppId}`;
+      
+    }
+  } catch (error) {
+    // 查询失败不影响主流程，继续执行（查不到是正常情况）
+    console.log(`未检查到重复记录，继续执行: ${error.message}`);
+    appendLog(groupId, `未检查到重复记录，继续执行: ${error.message}`);
+  }
+  
+  // 通过模板校验后才生成申请编号，避免无效消息消耗编号
+  const applicationId = generateApplicationId(query, groupId);
 
   const timeStr = new Date().toLocaleString('sv-SE', {
     timeZone: 'Asia/Hong_Kong'
