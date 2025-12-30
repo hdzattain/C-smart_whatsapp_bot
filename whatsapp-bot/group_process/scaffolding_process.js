@@ -30,7 +30,7 @@ function extractApplicationId(text) {
 // 外墙棚架工作流处理主函数
 // ============================
 
-async function processScaffoldingQuery(query, groupId) {
+async function processScaffoldingQuery(query, groupId, contactPhone) {
   try { query = converter(query); } catch (e) {}
 
   // 忽略总结消息
@@ -45,14 +45,14 @@ async function processScaffoldingQuery(query, groupId) {
   // 逻辑：先做模板校验 -> 通过后才生成ID -> 插入DB -> 返回带ID的成功消息
   if (/申請|開工|申请|开工/.test(query)) {
     // applicationId 由 handleApply 在通过模板校验后生成，避免不符合模板也消耗编号
-    return await handleApply(query, groupId, undefined);
+    return await handleApply(query, groupId);
   }
 
   // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
   if (appId) {
     // 安全相
     if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
-      return await handleSafetyById(appId, groupId);
+      return await handleSafetyById(appId, groupId, contactPhone);
     }
     // 撤离
     if (/撤離|撤离|收工|放工/.test(query)) {
@@ -73,11 +73,15 @@ async function processScaffoldingQuery(query, groupId) {
   return "未匹配到工作流";
 }
 
-async function handleSafetyById(appId, groupId) {
+async function handleSafetyById(appId, groupId, contactPhone) {
   // 根据需求，只要有编号+唤醒词，其他不填也没问题。// 我们只更新 safety_flag，如果用户补了时间等信息，这里暂不解析（为了"快"），// 如需解析非必填字段可在此处正则提取。此处按需求"其他字段不填/填错都没问题"处理。
+  const senderType = getSenderType(contactPhone, groupId);
   const data = {
     where: { application_id: appId, group_id: groupId },
-    set: { safety_flag: 1 }
+    set: {
+      safety_flag: 1,
+      sender_type: senderType,
+    }
   };
   try {
     const res = await axios.put(`${CRUD_API_HOST}/records/update_by_condition`, data);
@@ -229,10 +233,27 @@ function normalizeQuery(query, fields) {
 // 2、匹配字段的正则表达式
 function extractFields(query, fields) {
   return fields.reduce((result, field) => {
-    const match = field.regex
-      ? query.match(field.regex)
-      : query.match(new RegExp(`${field.name}[：:]\\s*([^\\n\\r]+)`));
-    result[field.name] = match ? match[1] : null;
+    if (field.regex) {
+      const match = query.match(field.regex);
+      result[field.name] = match ? match[1] : null;
+    } else {
+      // 按行匹配，确保只匹配当前行的内容
+      const lines = query.split(/\r?\n/);
+      let matched = false;
+      for (const line of lines) {
+        const pattern = new RegExp(`^${field.name}[：:]\\s*(.*)$`);
+        const match = line.match(pattern);
+        if (match) {
+          const value = match[1].trim();
+          result[field.name] = value || null;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        result[field.name] = null;
+      }
+    }
     return result;
   }, {});
 }
@@ -332,15 +353,50 @@ async function handleApply(query, groupId, contactPhone) {// 修正后的代码
   const process = matches['工序'];
   const time_range = matches['時間'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply;
+  // 检查必填字段（日期和时间不是必填）
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
+  }
+  
+  // 格式化位置字段：前半部分替换为 BLK A，后半部分只去除空格
+  const formattedLocation = formatLocation(location);
+  
+  // 检查是否已存在相同记录
+  try {
+    const checkRes = await axios.get(`${CRUD_API_HOST}/records/today`, {
+      params: {
+        group_id: groupId,
+        subcontractor: subcontractor.trim(),
+        number: parseInt(number),
+        location: formattedLocation,
+        floor: floor.trim(),
+        process: process.trim()
+      }
+    });
+    
+    if (checkRes.data && checkRes.data.length > 0 && checkRes.data[0].application_id) {
+      const existingAppId = checkRes.data[0].application_id;
+      console.log(`检测到重复记录，申请编号: ${existingAppId}`);
+      appendLog(groupId, `检测到重复记录，申请编号: ${existingAppId}`);
+      return `已經申請過相同記錄，申請編號爲${existingAppId}`;
+      
+    }
+  } catch (error) {
+    // 查询失败不影响主流程，继续执行（查不到是正常情况）
+    console.log(`未检查到重复记录，继续执行: ${error.message}`);
+    appendLog(groupId, `未检查到重复记录，继续执行: ${error.message}`);
   }
   
   // 通过模板校验后才生成申请编号，避免无效消息消耗编号
   const applicationId = generateApplicationId(query, groupId);
-
-  // 格式化位置字段：前半部分替换为 BLK A，后半部分只去除空格
-  const formattedLocation = formatLocation(location);
 
   const timeStr = new Date().toLocaleString('sv-SE', {
     timeZone: 'Asia/Hong_Kong'
@@ -401,8 +457,17 @@ async function handleSafety(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.safety;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.apply +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
 
   const data = {
@@ -458,8 +523,17 @@ async function handleLeave(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.leave +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   const data = {
     where: {
@@ -513,8 +587,17 @@ async function handleDelete(query, groupId, contactPhone) {
   const floor = matches['樓層'];
   const process = matches['工序'];
 
-  if (!subcontractor || !number || !location || !floor || !process) {
-    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete;
+  // 检查必填字段
+  const missingFields = [];
+  if (!subcontractor) missingFields.push('分判商');
+  if (!number) missingFields.push('人數');
+  if (!location) missingFields.push('位置');
+  if (!floor) missingFields.push('樓層');
+  if (!process) missingFields.push('工序');
+
+  if (missingFields.length > 0) {
+    return '不符合模版，請拷貝模板重試。\n' + SCAFFOLD_TEMPLATES.delete +'\n\n以下字段未填冩正確，請補充：\n' + 
+           missingFields.map((field, index) => `${index + 1}. ${field}`).join('\n');
   }
   const data = {
     subcontractor: subcontractor.trim(),
