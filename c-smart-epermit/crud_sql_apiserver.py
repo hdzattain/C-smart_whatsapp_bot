@@ -180,7 +180,8 @@ def insert_one_record(data):
         # 外墙群组：添加 process 和 time_range 查询条件
         check_sql = f"""
             SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
-            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s 
+            AND REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',') = REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')
             AND REPLACE(`process`,' ','')=%s
             AND `bstudio_create_time` BETWEEN %s AND %s
             ORDER BY id DESC LIMIT 1
@@ -199,7 +200,8 @@ def insert_one_record(data):
         # 非外墙群组：保持原查询条件
         check_sql = f"""
             SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
-            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+            WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `number`=%s 
+            AND REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',') = REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')
             AND `bstudio_create_time` BETWEEN %s AND %s
             ORDER BY id DESC LIMIT 1
         """
@@ -454,10 +456,10 @@ def update_by_condition():
                 params.append(value)
                 continue
             if key == "floor":
-                # 将、，分隔符统一转换为逗号进行比较
+                # 将空格移除，横线和中文逗号统一替换为单逗号进行比较
                 conditions.append(
-                    "REPLACE(REPLACE(REPLACE(`floor`, '、', ','), ' ', ''), '，', ',') "
-                    "= REPLACE(REPLACE(REPLACE(%s, '、', ','), ' ', ''), '，', ',')")
+                    "REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',') "
+                    "= REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')")
                 params.append(value)
                 continue
             if key in string_fields:
@@ -653,7 +655,8 @@ def add_worker_func(data):
     # 构建查询SQL（参考 insert_one_record 中非外墙群组的查询逻辑）
     check_sql = f"""
         SELECT id, number FROM `{TABLE_NAME}`
-        WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s AND `floor`=%s
+        WHERE `group_id`=%s AND REPLACE(`location`,' ','')=%s AND `subcontractor`=%s 
+        AND REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',') = REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')
         AND `bstudio_create_time` BETWEEN %s AND %s
         ORDER BY id DESC LIMIT 1
     """
@@ -732,6 +735,10 @@ def delete_records():
                     conditions.append(f"`{key}` BETWEEN %s AND %s")
                     params.extend([start, end])
                     continue
+            if key == "floor":
+                conditions.append("REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',') = REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')")
+                params.append(value)
+                continue
             conditions.append(f"`{key}` = %s")
             params.append(value)
 
@@ -766,9 +773,13 @@ def delete_fastgpt_records():
                     params.extend([start, end])
                     print(f"Date range for {key}: {start} to {end}")
                     continue
-            if key in ["floor", "group_id", "location", "subcontractor", "project", "uuid"]:
+            if key == "floor":
+                # 统一清理空格，并将各种形式的横线和逗号替换为单逗号，忽略大小写
+                conditions.append("LOWER(REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(`floor`, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ',')) = LOWER(REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(%s, ' ', ''), '、', ','), '，', ','), '[-—–−－]+', ','))")
+                params.append(str(value))
+            elif key in ["group_id", "location", "subcontractor", "project", "uuid"]:
                 # 移除所有空格（包括中间空格）并忽略大小写
-                conditions.append(f"LOWER(REGEXP_REPLACE(`{key}`, '\s+', '')) = LOWER(REGEXP_REPLACE(%s, '\s+', ''))")
+                conditions.append(f"LOWER(REGEXP_REPLACE(`{key}`, '\\s+', '')) = LOWER(REGEXP_REPLACE(%s, '\\s+', ''))")
                 params.append(str(value))
             else:
                 conditions.append(f"`{key}` = %s")
