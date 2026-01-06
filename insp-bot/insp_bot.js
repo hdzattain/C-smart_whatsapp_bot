@@ -1346,6 +1346,10 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     const senderInfo = `发送人number: ${contactPhone || 'undefined'} name: ${SenderContact.name || 'undefined'}, pushname: ${SenderContact.pushname || 'undefined'}`;
     console.log('[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
 
+    // 获取群组名称
+    const chat = await client.getChatById(msg.from);
+    const groupName = isGroup ? (chat.name || chat.contact?.name || chat.groupMetadata?.subject || chat.formattedTitle || '未知群組') : '非群組';
+
     // 步骤2: 根据消息类型提取纯文本 query（避免 Base64 污染）
     let query = await extractMessageText(client, msg);
     if (!query) {
@@ -1369,7 +1373,7 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
     console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
 
     // 步骤5: 追加发送人信息和群组 ID
-    query += ` ${senderInfo} [group_id:${groupId}]`;
+    query += ` ${senderInfo} [group_id:${groupId}] [group_name:${groupName}]`;
 
     // 步骤6: 检查是否为空或无效；早返回
     const isImage = msg.type === 'image' || msg.type === 'album';
@@ -1557,6 +1561,79 @@ async function handleWatchBot(client, msg, groupId, isGroup) {
   }
 }
 
+// AI 进度更新函数
+async function handleProgressUpdate(client, groupId) {
+  try {
+    console.log(`[定时任务] 开始执行 AI 进度更新，群组: ${groupId}`);
+    appendLog(groupId, `[定时任务] 开始执行 AI 进度更新`);
+
+    // 获取群组信息
+    const chat = await client.getChatById(groupId);
+    if (!chat || !chat.isGroup) {
+      console.log(`[定时任务] 群组 ${groupId} 不存在或不是群组，跳过`);
+      return;
+    }
+
+    const groupName = chat.name || chat.contact?.name || chat.groupMetadata?.subject || '未知群組';
+    const query = 'ai 進度更新';
+
+    // 构造模拟消息对象
+    const mockMsg = {
+      from: groupId,
+      author: groupId,
+      body: query,
+      type: 'chat',
+      quotedMsgId: null,
+      mentionedJidList: [],
+      mentions: []
+    };
+
+    // 调用 handlePlanBot 处理
+    await handlePlanBot(client, mockMsg, groupId, true);
+    console.log(`[定时任务] 群组 ${groupId} AI 进度更新已发送`);
+    appendLog(groupId, `[定时任务] AI 进度更新已发送`);
+  } catch (err) {
+    console.error(`[ERR] 群组 ${groupId} 发送 AI 进度更新失败:`, err);
+    appendLog(groupId, `[ERR] 发送 AI 进度更新失败: ${err.message}`);
+  }
+}
+
+// AI 进度总结函数
+async function handleProgressSummary(client, groupId) {
+  try {
+    console.log(`[定时任务] 开始执行 AI 进度总结，群组: ${groupId}`);
+    appendLog(groupId, `[定时任务] 开始执行 AI 进度总结`);
+
+    // 获取群组信息
+    const chat = await client.getChatById(groupId);
+    if (!chat || !chat.isGroup) {
+      console.log(`[定时任务] 群组 ${groupId} 不存在或不是群组，跳过`);
+      return;
+    }
+
+    const groupName = chat.name || chat.contact?.name || chat.groupMetadata?.subject || '未知群組';
+    const query = 'ai 進度總結';
+
+    // 构造模拟消息对象
+    const mockMsg = {
+      from: groupId,
+      author: groupId,
+      body: query,
+      type: 'chat',
+      quotedMsgId: null,
+      mentionedJidList: [],
+      mentions: []
+    };
+
+    // 调用 handlePlanBot 处理
+    await handlePlanBot(client, mockMsg, groupId, true);
+    console.log(`[定时任务] 群组 ${groupId} AI 进度总结已发送`);
+    appendLog(groupId, `[定时任务] AI 进度总结已发送`);
+  } catch (err) {
+    console.error(`[ERR] 群组 ${groupId} 发送 AI 进度总结失败:`, err);
+    appendLog(groupId, `[ERR] 发送 AI 进度总结失败: ${err.message}`);
+  }
+}
 
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
@@ -1955,6 +2032,9 @@ function start(client) {
         case 'watch-bot':
           await handleWatchBot(client, msg, groupId, isGroup);
           break;
+        case 'process-bot':
+          await handlePlanBot(client, msg, groupId, isGroup);
+          break;
         default:
           await client.reply(msg.from, '未知 Bot 类型', msg.id);
       }
@@ -2035,6 +2115,52 @@ function start(client) {
       console.error('[SummaryBot] 定时提醒失败：', e);
     }
   });
+
+  // 定时任务：对指定群组发送 AI 进度更新和总结
+  const targetGroups = ['120363268268186143@g.us', '120363422955145686@g.us'];
+
+  // AI 进度更新：每天下午5点（香港时区 UTC+8）
+  // 如果服务器是 UTC，17:00 HKT = 09:00 UTC；如果服务器是 HKT，直接使用 17:00
+  cron.schedule('0 17 * * *', async () => {
+    console.log('[定时任务] 开始执行 17:00 AI 进度更新（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressUpdate(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  // AI 进度总结：每天18:30（香港时区 UTC+8）
+  // 如果服务器是 UTC，18:30 HKT = 10:30 UTC；如果服务器是 HKT，直接使用 18:30
+  cron.schedule('30 18 * * *', async () => {
+    console.log('[定时任务] 开始执行 18:30 AI 进度总结（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  // 今天特殊定时任务：下午3点 AI 进度更新，下午4点 AI 进度总结
+  cron.schedule('0 15 * * *', async () => {
+    console.log('[特殊定时任务] 今天 15:00 AI 进度更新（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressUpdate(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  cron.schedule('0 16 * * *', async () => {
+    console.log('[特殊定时任务] 今天 16:00 AI 进度总结（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  // 下午2:30定时任务：针对特定群组，先执行 AI 进度更新，然后执行 AI 进度总结
 }
 
 wppconnect.create({
