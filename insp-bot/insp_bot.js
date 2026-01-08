@@ -23,6 +23,7 @@ let jsonMappingsCache = null;  // 全局缓存，减少重复加载
 // HTTP 与请求模块
 const axios = require('axios');
 const fetch = require('node-fetch');  // 用于兼容性请求
+const express = require('express');  // 健康检查服务器
 
 // WhatsApp 集成模块
 const wppconnect = require('@wppconnect-team/wppconnect');
@@ -64,6 +65,22 @@ const WIKI_TABLE_ID = 'tblyXhKKu9y3AALG';
 const PLAN_FASTGPT_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
 const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
 const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
+// Lark 事件回调配置
+// const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
+// 测试群组：120363422955145686@g.us
+const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
+  ? process.env.LARK_TARGET_GROUPS.split(',').map(g => g.trim())
+  : ['120363422955145686@g.us']; // 默认测试群组
+
+// === 健康检查状态 ===
+let state = { status: 'STARTING' };
+
+// === 健康检查监控配置 ===
+const HEALTH_CHECK_CONFIG = {
+  WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/79b4d6ce-02c2-4254-8bef-27e52e753b01',
+  KEYWORD: 'WA状态报警'
+};
+let lastHealthStatus = '';  // 记录上次健康状态
 
 // 确保 TMP_DIR 存在
 ensureDir(TMP_DIR);
@@ -1759,7 +1776,7 @@ async function parseMessageMentionsNumber(client, msg, inputQuery, isGroup = fal
     if (!jsonMappingsCache) {
       const mappingsPath = './mappings.json';  // 调整为实际路径
       try {
-        const data = await fs.readFile(mappingsPath, 'utf8');
+        const data = await fsPromises.readFile(mappingsPath, 'utf8');
         jsonMappingsCache = JSON.parse(data);
         console.log('[DEBUG] JSON 映射加载成功，键数:', Object.keys(jsonMappingsCache).length);
       } catch (error) {
@@ -1908,10 +1925,416 @@ async function getSenderPhoneNumber(client, authorId) {
   return contactPhone;
 }
 
+// === 健康检查监控函数 ===
+async function sendFeishu(text) {
+  try {
+    await axios.post(HEALTH_CHECK_CONFIG.WEBHOOK, {
+      msg_type: "text",
+      content: { text: `${HEALTH_CHECK_CONFIG.KEYWORD}: ${text}` }
+    });
+  } catch (e) {
+    console.error('飞书发送失败', e.message);
+  }
+}
+
+// 启动健康检查服务器
+function startHealthCheckServer() {
+  const app = express();
+  app.get('/health', (req, res) => res.json(state));
+  app.listen(3080, () => {
+    console.log('[健康检查] 服务器已启动在端口 3080');
+  });
+}
+
+// 监控状态变化并发送报警
+function checkStatusChange() {
+  const current = state.status;
+  
+  // 状态从 READY 切换到 QR_NEEDED 时报警
+  if (current === 'QR_NEEDED' && lastHealthStatus !== 'QR_NEEDED') {
+    sendFeishu("WPPConnect 检测到登录失效，请登录服务器扫码。命令: journalctl -u insp-bot -f");
+  }
+  
+  lastHealthStatus = current;
+}
+
+// ========== Lark 事件处理（文件监听模式） ==========
+let whatsappClient = null;  // 存储 WhatsApp 客户端引用
+const LARK_LOG_DIR = '/root/lark_server/logs/tblpuG3THQpAjkE7';
+let lastReadPosition = {};  // 记录每个文件的已读取位置 { '2026-01-08.log': 1024 }
+let processedEventIds = new Set();  // 记录已处理的事件ID，用于去重
+const SERVICE_START_TIME = Date.now();  // 记录服务启动时间（毫秒时间戳）
+
+// 生成合并后的格式化消息（处理多条记录）
+function formatMergedLarkEventMessage(recordAddedActions) {
+  if (!recordAddedActions || recordAddedActions.length === 0) {
+    return '';
+  }
+
+  // 按分區和樓層分组
+  const grouped = {};
+  for (const actionItem of recordAddedActions) {
+    const translatedFields = actionItem.translated_fields || {};
+    const 分區 = (translatedFields['位置分區'] || translatedFields['分區'] || '').replace(/\s+/g, '');
+    const 樓層 = translatedFields['樓層'] || '';
+    const 工序 = translatedFields['工序'] || '';
+    const 當日進度 = translatedFields['當日進度'] || '';
+    const 當日進度百分比 = 當日進度 ? `${(parseFloat(當日進度) * 100).toFixed(0)}%` : '';
+    const 填寫人 =
+      translatedFields['填寫人']?.users?.[0]?.name ||
+      translatedFields['填寫人']?.users?.[0]?.en_name ||
+      '';
+    
+    const key = `${分區}|${樓層}`;
+    if (!grouped[key]) {
+      grouped[key] = {
+        分區: 分區,
+        樓層: 樓層,
+        工序列表: [],
+        填寫人列表: new Set()
+      };
+    }
+    
+    if (工序) {
+      if (當日進度百分比) {
+        grouped[key].工序列表.push(`${工序}：${當日進度百分比}`);
+      } else {
+        grouped[key].工序列表.push(工序);
+      }
+    }
+
+    if (填寫人) {
+      grouped[key].填寫人列表.add(填寫人);
+    }
+  }
+
+  // 构建合并后的消息
+  let message = '✅已收到進度填報\n';
+  
+  const groups = Object.values(grouped);
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    
+    if (group.分區) {
+      message += `分區：${group.分區}\n`;
+    }
+    
+    if (group.樓層) {
+      message += `樓層：${group.樓層}\n`;
+    }
+    
+    if (group.工序列表.length > 0) {
+      message += `工序：\n`;
+      for (const 工序項 of group.工序列表) {
+        message += `-${工序項}\n`;
+      }
+    }
+
+    const 填寫人們 = Array.from(group.填寫人列表 || []);
+    if (填寫人們.length > 0) {
+      message += `填寫人：${填寫人們.join('、')}\n`;
+    }
+    
+    // 如果有多组，在组之间添加分隔（可选）
+    if (i < groups.length - 1) {
+      message += '\n';
+    }
+  }
+  
+  return message.trim();
+}
+
+// 处理 Lark 多维表格变更事件
+async function handleLarkBitableEvent(eventData, isTranslated = false) {
+  try {
+    // 检查事件时间，只处理服务启动后的新事件
+    const eventCreateTime = eventData?.header?.create_time;
+    if (eventCreateTime) {
+      const eventTime = parseInt(eventCreateTime, 10);
+      if (eventTime < SERVICE_START_TIME) {
+        console.log(`[Lark] 事件时间 ${eventCreateTime} 早于服务启动时间 ${SERVICE_START_TIME}，跳过处理`);
+        return;
+      }
+    }
+    
+    // 提取事件ID用于去重
+    const eventId = eventData?.header?.event_id || eventData?.event_id || null;
+    
+    if (eventId) {
+      // 检查是否已处理过
+      if (processedEventIds.has(eventId)) {
+        console.log(`[Lark] 事件已处理过，跳过: ${eventId}`);
+        return;
+      }
+      
+      // 标记为已处理
+      processedEventIds.add(eventId);
+      
+      // 限制去重集合大小，避免内存无限增长（保留最近1000个）
+      if (processedEventIds.size > 1000) {
+        const firstId = processedEventIds.values().next().value;
+        processedEventIds.delete(firstId);
+      }
+    }
+    
+    // 记录接收到的数据
+    const dataStr = JSON.stringify(eventData, null, 2);
+    console.log(`[Lark] 收到新事件${eventId ? ` (ID: ${eventId})` : ''}${isTranslated ? ' (翻译版)' : ''}`);
+    appendLog('lark-events', `收到数据${isTranslated ? ' (翻译版)' : ''}: ${dataStr}`);
+    
+    // 如果是翻译版数据，处理并发送消息
+    if (isTranslated && eventData?.event?.action_list) {
+      const actionList = eventData.event.action_list;
+      const recordAddedActions = actionList.filter(item => item.action === 'record_added' && item.translated_fields);
+      
+      console.log(`[Lark] 找到 ${recordAddedActions.length} 个 record_added 记录（共 ${actionList.length} 个 action）`);
+      appendLog('lark-events', `找到 ${recordAddedActions.length} 个 record_added 记录`);
+      
+      if (recordAddedActions.length === 0) {
+        return;
+      }
+      
+      // 合并所有记录生成一条消息
+      const mergedMessage = formatMergedLarkEventMessage(recordAddedActions);
+      
+      if (!mergedMessage) {
+        console.log('[Lark] 合并后的消息为空，跳过发送');
+        return;
+      }
+      
+      console.log(`[Lark] 生成合并后的格式化消息（包含 ${recordAddedActions.length} 个记录）:\n${mergedMessage}`);
+      appendLog('lark-events', `生成合并后的格式化消息（包含 ${recordAddedActions.length} 个记录）:\n${mergedMessage}`);
+      
+      // 发送合并后的消息到配置的目标群组
+      if (whatsappClient && LARK_TARGET_GROUPS.length > 0) {
+        for (const groupId of LARK_TARGET_GROUPS) {
+          try {
+            await whatsappClient.sendText(groupId.trim(), mergedMessage);
+            console.log(`[Lark] 已发送合并消息（${recordAddedActions.length} 个记录）到群组: ${groupId}`);
+            appendLog('lark-events', `已发送合并消息（${recordAddedActions.length} 个记录）到群组: ${groupId}`);
+          } catch (err) {
+            console.error(`[Lark] 发送合并消息到群组 ${groupId} 失败:`, err.message);
+            appendLog('lark-events', `发送合并消息到群组 ${groupId} 失败: ${err.message}`);
+          }
+        }
+      } else {
+        if (!whatsappClient) {
+          console.warn('[Lark] WhatsApp 客户端未初始化，无法发送消息');
+        }
+        if (LARK_TARGET_GROUPS.length === 0) {
+          console.log('[Lark] 未配置目标群组，仅记录日志');
+        }
+      }
+      
+      console.log(`[Lark] 完成处理，已发送 1 条合并消息（包含 ${recordAddedActions.length} 个记录）`);
+      appendLog('lark-events', `完成处理，已发送 1 条合并消息（包含 ${recordAddedActions.length} 个记录）`);
+    }
+  } catch (err) {
+    console.error('[Lark] 处理事件失败:', err);
+    appendLog('lark-events', `处理事件失败: ${err.message}`);
+  }
+}
+
+// 从内容中提取完整的 JSON 对象（跨多行）
+function extractJsonFromContent(content, startIndex) {
+  try {
+    // 优先查找翻译版数据 "[翻译版] 事件数据:"
+    let dataStart = content.indexOf('[翻译版] 事件数据:', startIndex);
+    let isTranslated = true;
+    
+    // 如果没找到翻译版，查找原始数据 "事件数据:"
+    if (dataStart === -1) {
+      dataStart = content.indexOf('事件数据:', startIndex);
+      isTranslated = false;
+    }
+    
+    if (dataStart === -1) {
+      return { json: null, endIndex: startIndex, isTranslated: false };
+    }
+
+    // 找到 JSON 开始的 { 位置
+    let jsonStart = content.indexOf('{', dataStart);
+    if (jsonStart === -1) {
+      return { json: null, endIndex: dataStart, isTranslated };
+    }
+
+    // 从 { 开始，匹配完整的 JSON 对象（通过括号匹配）
+    let braceCount = 0;
+    let jsonEnd = jsonStart;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = jsonStart; i < content.length; i++) {
+      const char = content[i];
+      
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEnd = i + 1;
+            break;
+          }
+        }
+      }
+    }
+
+    if (braceCount !== 0) {
+      // JSON 不完整，可能被截断了
+      return { json: null, endIndex: startIndex, isTranslated };
+    }
+
+    // 提取 JSON 字符串
+    const jsonStr = content.substring(jsonStart, jsonEnd);
+    const jsonData = JSON.parse(jsonStr);
+    
+    return { json: jsonData, endIndex: jsonEnd, isTranslated };
+  } catch (err) {
+    console.error('[Lark] 解析 JSON 失败:', err.message);
+    return { json: null, endIndex: startIndex, isTranslated: false };
+  }
+}
+
+// 读取日志文件的新增内容
+async function readNewLogContent(logFilePath) {
+  try {
+    if (!fs.existsSync(logFilePath)) {
+      // 文件不存在时也记录一次（避免日志刷屏）
+      const filename = path.basename(logFilePath);
+      if (!lastReadPosition[filename + '_notfound']) {
+        console.log(`[Lark] 日志文件不存在: ${logFilePath}`);
+        lastReadPosition[filename + '_notfound'] = true;
+      }
+      return;
+    }
+
+    const stats = fs.statSync(logFilePath);
+    const filename = path.basename(logFilePath);
+    const lastPos = lastReadPosition[filename] || 0;
+
+    // 如果文件大小没有变化，跳过
+    if (stats.size <= lastPos) {
+      return;
+    }
+
+    console.log(`[Lark] 检测到文件变化: ${filename}, 大小: ${stats.size}, 上次位置: ${lastPos}, 新增: ${stats.size - lastPos} bytes`);
+
+    // 读取新增内容
+    const fd = fs.openSync(logFilePath, 'r');
+    const buffer = Buffer.alloc(stats.size - lastPos);
+    fs.readSync(fd, buffer, 0, buffer.length, lastPos);
+    fs.closeSync(fd);
+
+    const newContent = buffer.toString('utf-8');
+    console.log(`[Lark] 读取到新增内容 (${newContent.length} 字符)`);
+
+    // 从新增内容中查找所有完整的事件数据
+    let searchIndex = 0;
+    let eventCount = 0;
+
+    while (true) {
+      const result = extractJsonFromContent(newContent, searchIndex);
+      
+      if (result.json) {
+        eventCount++;
+        console.log(`[Lark] 成功解析事件数据 #${eventCount}${result.isTranslated ? ' (翻译版)' : ''}`);
+        await handleLarkBitableEvent(result.json, result.isTranslated);
+        searchIndex = result.endIndex;
+      } else {
+        // 没有找到更多事件，退出循环
+        break;
+      }
+    }
+
+    if (eventCount > 0) {
+      console.log(`[Lark] 本次处理了 ${eventCount} 个事件`);
+    } else {
+      console.log(`[Lark] 未找到完整的事件数据（可能 JSON 被截断，等待下次读取）`);
+    }
+
+    // 更新已读取位置
+    lastReadPosition[filename] = stats.size;
+    console.log(`[Lark] 已更新读取位置: ${filename} -> ${stats.size}`);
+  } catch (err) {
+    console.error('[Lark] 读取日志文件失败:', err.message);
+    console.error('[Lark] 错误堆栈:', err.stack);
+    appendLog('lark-events', `读取日志文件失败: ${err.message}`);
+  }
+}
+
+// 启动日志文件监听
+function startLarkLogWatcher() {
+  console.log(`[Lark] 启动日志文件监听: ${LARK_LOG_DIR}`);
+  console.log(`[Lark] 服务启动时间: ${new Date(SERVICE_START_TIME).toISOString()} (${SERVICE_START_TIME})`);
+  console.log(`[Lark] 只处理启动时间之后的新事件`);
+  appendLog('lark-events', `服务启动时间: ${new Date(SERVICE_START_TIME).toISOString()} (${SERVICE_START_TIME})`);
+  
+  // 检查目录是否存在
+  if (!fs.existsSync(LARK_LOG_DIR)) {
+    console.error(`[Lark] 错误: 日志目录不存在: ${LARK_LOG_DIR}`);
+    appendLog('lark-events', `错误: 日志目录不存在: ${LARK_LOG_DIR}`);
+    return;
+  }
+  
+  console.log(`[Lark] 日志目录存在，开始监听`);
+  
+  // 每秒检查一次日志文件
+  setInterval(() => {
+    try {
+      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const logFilePath = path.join(LARK_LOG_DIR, `${today}.log`);
+      
+      readNewLogContent(logFilePath).catch(err => {
+        console.error('[Lark] 检查日志文件失败:', err.message);
+        console.error('[Lark] 错误堆栈:', err.stack);
+      });
+    } catch (err) {
+      console.error('[Lark] 日志监听循环错误:', err.message);
+      console.error('[Lark] 错误堆栈:', err.stack);
+    }
+  }, 1000); // 每秒检查一次
+
+  console.log('[Lark] 日志文件监听已启动，每秒检查一次');
+  
+  // 立即检查一次
+  const today = new Date().toISOString().slice(0, 10);
+  const logFilePath = path.join(LARK_LOG_DIR, `${today}.log`);
+  console.log(`[Lark] 立即检查日志文件: ${logFilePath}`);
+  readNewLogContent(logFilePath).catch(err => {
+    console.error('[Lark] 初始检查失败:', err.message);
+  });
+}
+
 
 // Main Start Function
 function start(client) {
   console.log('WhatsApp Bot 已启动 (WPPConnect)');
+
+  // 保存客户端引用供 Lark 事件处理使用
+  whatsappClient = client;
+  
+  // 更新状态为 READY
+  state.status = 'READY';
+  checkStatusChange();
+  
+  // 启动 Lark 日志文件监听
+  startLarkLogWatcher();
 
   client.onMessage(async msg => {
     try {
@@ -2130,7 +2553,7 @@ function start(client) {
     timezone: 'Asia/Hong_Kong'
   });
 
-  // AI 进度总结：每天18:30（香港时区 UTC+8）
+  // AI 进度总结：每天18:30, 20:00, 22:00（香港时区 UTC+8）
   // 如果服务器是 UTC，18:30 HKT = 10:30 UTC；如果服务器是 HKT，直接使用 18:30
 
   cron.schedule('00 22 * * *', async () => {
@@ -2182,20 +2605,30 @@ function start(client) {
   // 下午2:30定时任务：针对特定群组，先执行 AI 进度更新，然后执行 AI 进度总结
 }
 
+// 启动健康检查服务器
+startHealthCheckServer();
+
 wppconnect.create({
   session: 'whatsapp-bot-session',
   catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
+    state.status = 'QR_NEEDED';
+    checkStatusChange();
     console.log('请扫描以下二维码登录 WhatsApp:');
     qrcode.generate(urlCode, { small: true });
   },
   logQR: false,
   headless: true,
+  autoClose: false,  // 掉线时不自动关闭进程
   puppeteerOptions: {
     executablePath: '/usr/bin/google-chrome-stable',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 })
   .then(client => start(client))
-  .catch(error => console.log(error));
+  .catch(error => {
+    console.error(error);
+    state.status = 'ERROR';
+    checkStatusChange();
+  });
 
 
