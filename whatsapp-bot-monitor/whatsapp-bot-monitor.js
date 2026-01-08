@@ -76,7 +76,7 @@ setInterval(async () => {
         
         if (lastAlertTime === 0 || (now - lastAlertTime) >= CONFIG.BOMB_INTERVAL) {
             const totalMinutes = ((now - firstAlertTime) / 60000).toFixed(0);
-            await doBomb("主进程崩溃！", "接口无法访问，请检查服务器进程状态。", `${totalMinutes} 分钟`);
+            await doBomb("C-smart安全巡检机器人主进程崩溃！", "接口无法访问，请检查服务器进程状态。", `${totalMinutes} 分钟`);
         }
     }
 }, CONFIG.CHECK_INTERVAL);
