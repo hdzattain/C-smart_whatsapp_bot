@@ -1,5 +1,6 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const express = require('express');
 const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
@@ -109,6 +110,16 @@ const GROUP_FORMATS = {
 const TMP_DIR  = path.join(__dirname, 'tmp');
 fs.ensureDirSync(TMP_DIR);
 
+// === 健康检查状态 ===
+let state = { status: 'STARTING' };
+
+// 状态查询接口
+const app = express();
+app.get('/health', (req, res) => res.json(state));
+app.listen(3060, () => {
+  console.log('[健康检查] 服务器已启动在端口 3060');
+});
+
 const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
 const LOG_DIR  = path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'whatsapp.log');
@@ -151,14 +162,23 @@ const client = new Client({
 });
 
 client.on('qr', qr => {
+  state.status = 'QR_NEEDED';
   qrcode.generate(qr, { small: true });
   console.log('请扫描二维码登录 WhatsApp');
   appendLog('default', '请扫描二维码登录 WhatsApp');
 });
 
 client.on('ready', () => {
+  state.status = 'READY';
   console.log('WhatsApp 机器人已启动');
   appendLog('default', 'WhatsApp 机器人已启动');
+});
+
+client.on('disconnected', (reason) => {
+  state.status = 'DISCONNECTED';
+  console.error('Bot Disconnected:', reason);
+  appendLog('default', `Bot Disconnected: ${reason}`);
+  process.exit(1); // 触发 systemd 重启重连
 });
 
 // —— 关键词检测 ——
