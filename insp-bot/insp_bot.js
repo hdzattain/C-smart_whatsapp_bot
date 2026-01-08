@@ -2132,6 +2132,25 @@ function start(client) {
 
   // AI 进度总结：每天18:30（香港时区 UTC+8）
   // 如果服务器是 UTC，18:30 HKT = 10:30 UTC；如果服务器是 HKT，直接使用 18:30
+
+  cron.schedule('00 22 * * *', async () => {
+    console.log('[定时任务] 开始执行 22:00 AI 进度总结（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  cron.schedule('00 20 * * *', async () => {
+    console.log('[定时任务] 开始执行 20:00 AI 进度总结（香港时区）');
+    for (const groupId of targetGroups) {
+      await handleProgressSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
   cron.schedule('30 18 * * *', async () => {
     console.log('[定时任务] 开始执行 18:30 AI 进度总结（香港时区）');
     for (const groupId of targetGroups) {
