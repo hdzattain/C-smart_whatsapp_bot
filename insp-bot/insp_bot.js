@@ -1497,6 +1497,169 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
   }
 }
 
+
+async function handleSafetyBot(client, msg, groupId, isGroup) {
+  try {
+    // 步骤1: 提取发送人信息（缓存以避免重复调用）
+    const senderId = msg.author || msg.from;
+    const SenderContact = await client.getContact(senderId);
+    let contactPhone = await getSenderPhoneNumber(client, senderId);
+    const senderInfo = `发送人number: ${contactPhone || 'undefined'} name: ${SenderContact.name || 'undefined'}, pushname: ${SenderContact.pushname || 'undefined'}`;
+    console.log('[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
+
+    // 获取群组名称
+    const chat = await client.getChatById(msg.from);
+    const groupName = isGroup ? (chat.name || chat.contact?.name || chat.groupMetadata?.subject || chat.formattedTitle || '未知群組') : '非群組';
+
+    // 步骤2: 根据消息类型提取纯文本 query（避免 Base64 污染）
+    let query = await extractMessageText(client, msg);
+    if (!query) {
+      query = '[未识别内容]';
+    }
+    console.log(`[LOG] 原始消息内容: ${query}`);
+
+    // 步骤3: 处理引用消息
+    if (msg.quotedMsgId) {
+      const quoted = await client.getMessageById(msg.quotedMsgId);
+      const qid = quoted?.id || '';
+      if (qid) {
+        const quotedText = await extractMessageText(client, quoted);  // 使用提取函数确保纯文本
+        const quotedMsg = await parseMessageMentionsNumber(client, quoted, quotedText || '', isGroup);
+        query += ` 引用消息: ${quotedMsg} qid: ${qid}`;
+      }
+    }
+
+    // 步骤4: 处理 mentions 和映射替换
+    query = await parseMessageMentionsNumber(client, msg, query, isGroup);
+    console.log(`[LOG] parseMessageMentionsNumber 处理后消息内容: ${query}`);
+
+    // 步骤5: 追加发送人信息和群组 ID
+    query += ` ${senderInfo} [group_id:${groupId}] [group_name:${groupName}]`;
+
+    // 步骤6: 检查是否为空或无效；早返回
+    const isImage = msg.type === 'image' || msg.type === 'album';
+    const isMedia = isImage || msg.type === 'document';  // 可扩展其他媒体
+    if (!query.trim() || query === '[未识别内容]') {
+      if (!isGroup || shouldReply(msg, BOT_NAME)) {
+        await client.reply(msg.from, '未识别到有效内容。', msg.id);
+        console.log('未识别到有效内容，已回复用户');
+        appendLog(groupId, '未识别到有效内容，已回复用户');
+      }
+      if (!isMedia) {
+        console.log('当前的消息类型是 直接返回', msg.type);
+        return;
+      }
+    }
+
+    console.log('收到消息类型是msg.type', msg.type);
+
+    // 步骤7: 处理媒体上传（仅媒体类型）
+    const images = [];
+    if (isMedia) {
+      console.log('当前的消息类型是msg.type', msg.type);
+      const mediaData = await client.downloadMedia(msg);
+      if (!mediaData) {
+        throw new Error(`无法下载媒体: ${msg.type}`);
+      }
+
+      const groupImgPath = path.join(TMP_DIR, groupId);
+      await fsPromises.mkdir(groupImgPath, { recursive: true });
+
+      let tempFilePath;
+      let ext = 'jpg';  // 默认图像
+      if (msg.type === 'document') {
+        ext = mime.extension(msg.mimetype) || 'pdf';
+      }
+      tempFilePath = path.join(groupImgPath, `temp-${msg.type}-${Date.now()}.${ext}`);
+
+      // 处理 Base64（假设 mediaData 为 base64 字符串）
+      const base64Data = typeof mediaData === 'string' ? mediaData.replace(/^data:.*;base64,/, '') : mediaData;
+      await fsPromises.writeFile(tempFilePath, Buffer.from(base64Data, 'base64'));
+
+      // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
+      const imageUrl = await uploadImageToFeishu(tempFilePath);  // 假设支持文档
+      console.log(`[LOG] 媒体已上传到飞书，URL: ${imageUrl}`);
+      images.push(imageUrl);
+
+      // 清理临时文件
+      await fsPromises.unlink(tempFilePath).catch(() => { });  // 忽略删除错误
+    }
+
+    // 步骤8: 决定是否回复
+    const needReply = isGroup && shouldReply(msg, BOT_NAME);
+    console.log(`是否需要AI回复: ${needReply}`);
+    appendLog(groupId, `是否需要AI回复: ${needReply}`);
+
+    // 步骤9: 调用 FastGPT
+    let replyStr;
+    try {
+      console.log(`开始调用FastGPT，query: ${query}`);
+      appendLog(groupId, `开始调用FastGPT，query: ${query}`);
+      if (images.length > 0) {
+        replyStr = await sendToFastGPTWithMedia({
+          query,
+          images,
+          user: msg.from,
+          group_id: msg.from
+        });
+      } else {
+        replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId });
+      }
+      console.log(`FastGPT response content: ${replyStr}`);
+      appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
+    } catch (e) {
+      console.log(`FastGPT 调用失败: ${e.message}`);
+      appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
+      if (needReply) {
+        await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
+      }
+      return;
+    }
+
+    // 步骤10: 执行回复或反应
+    if (needReply) {
+      try {
+        // 检查 FastGPT 返回内容是否包含"成功"或"失败"
+        let reactionEmoji = null;
+        if (replyStr.includes('成功')) {
+          reactionEmoji = '✅';
+        } else if (replyStr.includes('失败')) {
+          reactionEmoji = '❌';
+        }
+
+        if (reactionEmoji) {
+          // 使用 reaction 而不是 reply
+          console.log(`尝试发送反应: ${reactionEmoji}`);
+          appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
+          await client.sendReactionToMessage(msg.id, reactionEmoji);
+          console.log('已发送反应');
+          appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+        } else {
+          // 其他情况使用 reply
+          console.log(`尝试回复用户: ${replyStr}`);
+          appendLog(groupId, `尝试回复用户: ${replyStr}`);
+          await client.reply(msg.from, replyStr, msg.id);
+          console.log('已回复用户');
+          appendLog(groupId, '已回复用户');
+        }
+      } catch (e) {
+        console.log(`回复/反应失败: ${e.message}`);
+        appendLog(groupId, `回复/反应失败: ${e.message}`);
+      }
+    } else {
+      console.log('群聊未触发关键词，不回复，仅上传FastGPT');
+      appendLog(groupId, '群聊未触发关键词，不回复，仅上传FastGPT');
+    }
+
+  } catch (err) {
+    console.log(`处理消息出错: ${err.message}`);
+    appendLog(msg.from || groupId, `处理消息出错: ${err.message}`);
+    console.log('处理消息时发生异常');
+    appendLog(msg.from || groupId, '处理消息时发生异常');
+  }
+}
+
+
 // 辅助函数：提取消息纯文本（新引入，避免污染）
 async function extractMessageText(client, msg) {
   switch (msg.type) {
@@ -2457,6 +2620,9 @@ function start(client) {
           break;
         case 'process-bot':
           await handlePlanBot(client, msg, groupId, isGroup);
+          break;
+        case 'safety-bot':
+          await handleSafetyBot(client, msg, groupId, isGroup);
           break;
         default:
           await client.reply(msg.from, '未知 Bot 类型', msg.id);
