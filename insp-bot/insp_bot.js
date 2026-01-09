@@ -1601,7 +1601,7 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     }
 
     // 步骤8: 决定是否回复
-    const needReply = isGroup && shouldReply(msg, BOT_NAME);
+    const needReply = isGroup
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
