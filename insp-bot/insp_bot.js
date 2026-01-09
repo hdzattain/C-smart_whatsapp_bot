@@ -1557,32 +1557,47 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     const images = [];
     if (isMedia) {
       console.log('当前的消息类型是msg.type', msg.type);
-      const mediaData = await client.downloadMedia(msg);
-      if (!mediaData) {
-        throw new Error(`无法下载媒体: ${msg.type}`);
-      }
+
+      // 支持相册场景：如果是 album，并且存在 medias 数组，则对每一张图片单独处理
+      const mediaMessages =
+        msg.type === 'album' && Array.isArray(msg.medias) && msg.medias.length
+          ? msg.medias
+          : [msg];
 
       const groupImgPath = path.join(TMP_DIR, groupId);
       await fsPromises.mkdir(groupImgPath, { recursive: true });
 
-      let tempFilePath;
-      let ext = 'jpg';  // 默认图像
-      if (msg.type === 'document') {
-        ext = mime.extension(msg.mimetype) || 'pdf';
+      for (const mediaMsg of mediaMessages) {
+        const mediaData = await client.downloadMedia(mediaMsg);
+        if (!mediaData) {
+          throw new Error(`无法下载媒体: ${mediaMsg.type}`);
+        }
+
+        let tempFilePath;
+        let ext = 'jpg'; // 默认图像
+        if (mediaMsg.type === 'document') {
+          ext = mime.extension(mediaMsg.mimetype) || 'pdf';
+        }
+        tempFilePath = path.join(groupImgPath, `temp-${mediaMsg.type}-${Date.now()}.${ext}`);
+
+        // 处理 Base64（假设 mediaData 为 base64 字符串）
+        const base64Data =
+          typeof mediaData === 'string' ? mediaData.replace(/^data:.*;base64,/, '') : mediaData;
+        await fsPromises.writeFile(tempFilePath, Buffer.from(base64Data, 'base64'));
+
+        // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
+        const imageUrl = await uploadImageToFeishu(tempFilePath); // 假设支持文档
+        console.log(`[LOG] 媒体已上传到飞书，URL: ${imageUrl}`);
+        images.push(imageUrl);
+
+        // 将图片URL添加到query中
+        if (imageUrl) {
+          query += ` [图片URL: ${imageUrl}]`;
+        }
+
+        // 清理临时文件
+        await fsPromises.unlink(tempFilePath).catch(() => {}); // 忽略删除错误
       }
-      tempFilePath = path.join(groupImgPath, `temp-${msg.type}-${Date.now()}.${ext}`);
-
-      // 处理 Base64（假设 mediaData 为 base64 字符串）
-      const base64Data = typeof mediaData === 'string' ? mediaData.replace(/^data:.*;base64,/, '') : mediaData;
-      await fsPromises.writeFile(tempFilePath, Buffer.from(base64Data, 'base64'));
-
-      // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
-      const imageUrl = await uploadImageToFeishu(tempFilePath);  // 假设支持文档
-      console.log(`[LOG] 媒体已上传到飞书，URL: ${imageUrl}`);
-      images.push(imageUrl);
-
-      // 清理临时文件
-      await fsPromises.unlink(tempFilePath).catch(() => { });  // 忽略删除错误
     }
 
     // 步骤8: 决定是否回复
@@ -1621,14 +1636,31 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
       try {
         // 检查 FastGPT 返回内容是否包含"成功"或"失败"
         let reactionEmoji = null;
+        const hasCreateSuccess = replyStr.includes('創建成功');
         if (replyStr.includes('成功')) {
           reactionEmoji = '✅';
         } else if (replyStr.includes('失败')) {
           reactionEmoji = '❌';
         }
 
-        if (reactionEmoji) {
-          // 使用 reaction 而不是 reply
+        if (reactionEmoji === '✅') {
+          // 包含"成功"：发送 reaction
+          console.log(`尝试发送反应: ${reactionEmoji}`);
+          appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
+          await client.sendReactionToMessage(msg.id, reactionEmoji);
+          console.log('已发送反应');
+          appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+          
+          // 只有包含"創建成功"时才发送 reply
+          if (hasCreateSuccess) {
+            console.log(`尝试回复用户: ${replyStr}`);
+            appendLog(groupId, `尝试回复用户: ${replyStr}`);
+            await client.reply(msg.from, replyStr, msg.id);
+            console.log('已回复用户');
+            appendLog(groupId, '已回复用户');
+          }
+        } else if (reactionEmoji === '❌') {
+          // 包含"失败"：只发送 reaction，不发送 reply
           console.log(`尝试发送反应: ${reactionEmoji}`);
           appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
           await client.sendReactionToMessage(msg.id, reactionEmoji);
