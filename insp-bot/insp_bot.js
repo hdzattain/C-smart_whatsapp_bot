@@ -1634,45 +1634,88 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     // 步骤10: 执行回复或反应
     if (needReply) {
       try {
-        // 检查 FastGPT 返回内容是否包含"成功"或"失败"
-        let reactionEmoji = null;
-        const hasCreateSuccess = replyStr.includes('創建成功');
-        if (replyStr.includes('成功')) {
-          reactionEmoji = '✅';
-        } else if (replyStr.includes('失败')) {
-          reactionEmoji = '❌';
-        }
-
-        if (reactionEmoji === '✅') {
-          // 包含"成功"：发送 reaction
-          console.log(`尝试发送反应: ${reactionEmoji}`);
-          appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
-          await client.sendReactionToMessage(msg.id, reactionEmoji);
-          console.log('已发送反应');
-          appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+        // 检查是否包含日期分段标记
+        const hasDateSegments = replyStr.includes('<<今日>>') || 
+                                replyStr.includes('<<昨日>>') || 
+                                replyStr.includes('<<前日>>');
+        
+        if (hasDateSegments) {
+          // 按照 <<今日>>、<<昨日>>、<<前日>> 的顺序分割并发送
+          const segments = [];
+          const markers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
           
-          // 只有包含"創建成功"时才发送 reply
-          if (hasCreateSuccess) {
+          for (let i = 0; i < markers.length; i++) {
+            const marker = markers[i];
+            if (replyStr.includes(marker)) {
+              const startIndex = replyStr.indexOf(marker);
+              const endIndex = i < markers.length - 1 
+                ? replyStr.indexOf(markers[i + 1], startIndex + marker.length)
+                : replyStr.length;
+              
+              let segment = '';
+              if (endIndex === -1) {
+                segment = replyStr.substring(startIndex);
+              } else {
+                segment = replyStr.substring(startIndex, endIndex);
+              }
+              
+              // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
+              segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
+              segments.push(segment);
+            }
+          }
+          
+          // 按顺序发送每条消息
+          for (const segment of segments) {
+            console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
+            appendLog(groupId, `尝试发送分段消息`);
+            await client.reply(msg.from, segment, msg.id);
+            console.log('已发送分段消息');
+            appendLog(groupId, '已发送分段消息');
+            // 添加短暂延迟，避免消息发送过快
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else {
+          // 原有的逻辑：检查 FastGPT 返回内容是否包含"成功"或"失败"
+          let reactionEmoji = null;
+          const hasCreateSuccess = replyStr.includes('創建成功');
+          if (replyStr.includes('成功')) {
+            reactionEmoji = '✅';
+          } else if (replyStr.includes('失败')) {
+            reactionEmoji = '❌';
+          }
+
+          if (reactionEmoji === '✅') {
+            // 包含"成功"：发送 reaction
+            console.log(`尝试发送反应: ${reactionEmoji}`);
+            appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
+            await client.sendReactionToMessage(msg.id, reactionEmoji);
+            console.log('已发送反应');
+            appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+            
+            // 只有包含"創建成功"时才发送 reply
+            if (hasCreateSuccess) {
+              console.log(`尝试回复用户: ${replyStr}`);
+              appendLog(groupId, `尝试回复用户: ${replyStr}`);
+              await client.reply(msg.from, replyStr, msg.id);
+              console.log('已回复用户');
+              appendLog(groupId, '已回复用户');
+            }
+          } else if (reactionEmoji === '❌') {
+            // 包含"失败"：只发送 reaction，不发送 reply
+            console.log(`尝试发送反应: ${reactionEmoji}`);
+            appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
+            await client.sendReactionToMessage(msg.id, reactionEmoji);
+            console.log('已发送反应');
+            appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+          } else {
+            // 其他情况使用 reply
             console.log(`尝试回复用户: ${replyStr}`);
             appendLog(groupId, `尝试回复用户: ${replyStr}`);
             await client.reply(msg.from, replyStr, msg.id);
             console.log('已回复用户');
             appendLog(groupId, '已回复用户');
           }
-        } else if (reactionEmoji === '❌') {
-          // 包含"失败"：只发送 reaction，不发送 reply
-          console.log(`尝试发送反应: ${reactionEmoji}`);
-          appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
-          await client.sendReactionToMessage(msg.id, reactionEmoji);
-          console.log('已发送反应');
-          appendLog(groupId, `已发送反应: ${reactionEmoji}`);
-        } else {
-          // 其他情况使用 reply
-          console.log(`尝试回复用户: ${replyStr}`);
-          appendLog(groupId, `尝试回复用户: ${replyStr}`);
-          await client.reply(msg.from, replyStr, msg.id);
-          console.log('已回复用户');
-          appendLog(groupId, '已回复用户');
         }
       } catch (e) {
         console.log(`回复/反应失败: ${e.message}`);
