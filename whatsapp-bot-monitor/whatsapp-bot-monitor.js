@@ -1,9 +1,8 @@
+require('dotenv').config();
 const axios = require('axios');
 
 const CONFIG = {
-    WEBHOOKS: [
-        'https://open.feishu.cn/open-apis/bot/v2/hook/79b4d6ce-02c2-4254-8bef-27e52e753b01'
-    ],
+    WEBHOOKS: process.env.WEBHOOKS ? process.env.WEBHOOKS.split(',').map(s => s.trim()) : [],
     HEALTH_URL: 'http://localhost:3060/health',
     BOMB_INTERVAL: 2 * 60 * 1000, // 2分钟轰炸一次
     CHECK_INTERVAL: 20 * 1000     // 20秒检查一次
