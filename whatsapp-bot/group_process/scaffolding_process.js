@@ -296,11 +296,11 @@ async function processScaffoldingQuery(query, groupId, contactPhone) {
       return await handleDeleteById(appId, groupId, query);
     }
     // 撤离
-    if (/撤離|撤离|收工|放工/.test(query)) {
+    else if (/撤離|撤离|收工|放工/.test(query)) {
       return await handleLeaveById(appId, groupId, query);
     }
     // 安全相
-    if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
+    else if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
       return await handleSafetyById(appId, groupId, contactPhone, query);
     }
   }
