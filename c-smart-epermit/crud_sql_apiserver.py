@@ -13,7 +13,8 @@ app = Flask(__name__)
 # --- 外墙棚架群组定义 ---
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
-    '120363372181860061@g.us'
+    '120363372181860061@g.us',
+    '120363420660094468@g.us'
 ]
 
 # --- 打窿群组定义 ---
@@ -565,6 +566,9 @@ def validate_scaffold_group_fields(filters):
         dict or None: 如果校验失败返回错误信息字典，否则返回None
     """
     # 外墙棚架群组校验必填字段
+    app_id = filters.get("application_id")
+    if app_id is not None and app_id != "":
+        return None
     is_scaffold_group = filters.get("group_id") in EXTERNAL_SCAFFOLDING_GROUPS
     required = ["subcontractor", "process"]
 
@@ -786,29 +790,60 @@ def delete_fastgpt_records():
     if not conditions:
         return jsonify({"error": "没有有效过滤字段"}), 400
 
-    sql = f"DELETE FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
-    total_params = tuple(params)
-
-    print(f"Generated SQL: {sql}")
-    print(f"Total params: {total_params}")
-
-    deleted = execute_query(sql, total_params)
-    print(f"Deleted rows count: {deleted}")
-
-    if deleted == 0:
-        debug_sql = f"SELECT id, subcontractor, group_id, HEX(subcontractor), HEX(group_id), LENGTH(subcontractor), LENGTH(group_id) FROM `{TABLE_NAME}` WHERE LOWER(REGEXP_REPLACE(`group_id`, '\s+', '')) = %s"
-        debug_params = (str(filters.get('group_id', '')),)
-        try:
-            similar_records = execute_query(debug_sql, debug_params, fetch=True)
-            print(f"Similar records found: {similar_records}")
-        except Exception as e:
-            print(f"Debug query error: {e}")
+    # 先查询是否存在匹配的记录
+    select_sql = f"SELECT * FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
+    select_params = tuple(params)
+    
+    print(f"Generated SELECT SQL: {select_sql}")
+    print(f"SELECT params: {select_params}")
+    
+    try:
+        select_result = execute_query(select_sql, select_params, fetch=True)
+        select_count = len(select_result) if select_result else 0
+        print(f"SELECT result count: {select_count}")
+        
+        if select_count == 0:
+            # 未找到匹配记录，返回明确的错误信息
+            error_msg = "未找到匹配记录"
+            # 如果有application_id，明确告知找不到该编号
+            if filters.get("application_id"):
+                error_msg = f"找唔到編號 {filters.get('application_id')}"
+            return jsonify({
+                "error": error_msg,
+                "message": error_msg,
+                "found": False
+            }), 404
+        
+        # 找到了记录，执行删除
+        sql = f"DELETE FROM `{TABLE_NAME}` WHERE {' AND '.join(conditions)}"
+        total_params = tuple(params)
+        
+        print(f"Generated DELETE SQL: {sql}")
+        print(f"DELETE params: {total_params}")
+        
+        deleted = execute_query(sql, total_params)
+        print(f"Deleted rows count: {deleted}")
+        
+        if deleted == 0:
+            # 这种情况理论上不应该发生，因为已经查询到了记录
+            return jsonify({
+                "error": "删除失败，记录可能已被其他操作删除",
+                "message": "删除失败，记录可能已被其他操作删除",
+                "found": True,
+                "deleted": False
+            }), 500
+        
         return jsonify({
-            "error": "未找到匹配记录",
-            "debug": f"Try running: {sql} with params {total_params} in DB. Check for triggers or concurrent updates."
-        }), 404
-
-    return jsonify({"status": "ok", "deleted_count": deleted})
+            "status": "ok", 
+            "deleted_count": deleted,
+            "message": "删除成功"
+        })
+    except Exception as e:
+        print(f"Delete query error: {str(e)}")
+        return jsonify({
+            "error": f"删除操作失败: {str(e)}",
+            "message": f"删除操作失败: {str(e)}"
+        }), 500
 
 
 @app.route("/columns", methods=["GET"])

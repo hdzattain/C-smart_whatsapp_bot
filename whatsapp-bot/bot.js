@@ -1,5 +1,6 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const express = require('express');
 const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
@@ -12,42 +13,21 @@ const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
 const { processScaffoldingQuery } = require('./group_process/scaffolding_process');
 const { processDrillingQuery } = require('./group_process/drill_hole_process');
-
-// client对象（假定已全局初始化）
-const GROUP_ID = '120363418441024423@g.us'; // PTW LiftShaft TEST
-const GROUP_ID_2 = '120363400601106571@g.us'; // TEST_C-Smart_Bot
-const GROUP_ID_3 = '120363030675916527@g.us'; // 啟德醫院 B 𨋢膽第一線
-const GROUP_ID_4 = '120363372181860061@g.us'; // 啟德醫院 Site 🅰 外牆棚架工作
-const GROUP_ID_5 = '120363401312839305@g.us'; // 啟德醫院🅰️Core/打窿工序通知群組
-const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序及巡火匯報群組
-const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
-const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
-const GROUP_ID_9 = '120363420660094468@g.us'; // 牆棚架工作测试群组
-
-// 打窿群组定义
-const DRILL_GROUPS = [
-    GROUP_ID_5,
-    GROUP_ID_8
-]
-
-
-// 外墙棚架群组定义
-const EXTERNAL_SCAFFOLDING_GROUPS = [
-    GROUP_ID_2,
-    GROUP_ID_4,
-    GROUP_ID_9
-]
-
-// 完全静默群组配置
-const BLACKLIST_GROUPS = [
+const {
+  GROUP_ID,
+  GROUP_ID_2,
+  GROUP_ID_3,
+  GROUP_ID_4,
   GROUP_ID_5,
-  GROUP_ID_6
-];
-
-// 错误缺失提醒群组配置
-const ERROR_REPLY_GROUPS = [
-  GROUP_ID_2
-];
+  GROUP_ID_6,
+  GROUP_ID_7,
+  GROUP_ID_8,
+  GROUP_ID_9,
+  DRILL_GROUPS,
+  EXTERNAL_SCAFFOLDING_GROUPS,
+  BLACKLIST_GROUPS,
+  ERROR_REPLY_GROUPS
+} = require('./group_constants');
 
 
 const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
@@ -130,6 +110,16 @@ const GROUP_FORMATS = {
 const TMP_DIR  = path.join(__dirname, 'tmp');
 fs.ensureDirSync(TMP_DIR);
 
+// === 健康检查状态 ===
+let state = { status: 'STARTING' };
+
+// 状态查询接口
+const app = express();
+app.get('/health', (req, res) => res.json(state));
+app.listen(3060, () => {
+  console.log('[健康检查] 服务器已启动在端口 3060');
+});
+
 const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
 const LOG_DIR  = path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'whatsapp.log');
@@ -172,14 +162,23 @@ const client = new Client({
 });
 
 client.on('qr', qr => {
+  state.status = 'QR_NEEDED';
   qrcode.generate(qr, { small: true });
   console.log('请扫描二维码登录 WhatsApp');
   appendLog('default', '请扫描二维码登录 WhatsApp');
 });
 
 client.on('ready', () => {
+  state.status = 'READY';
   console.log('WhatsApp 机器人已启动');
   appendLog('default', 'WhatsApp 机器人已启动');
+});
+
+client.on('disconnected', (reason) => {
+  state.status = 'DISCONNECTED';
+  console.error('Bot Disconnected:', reason);
+  appendLog('default', `Bot Disconnected: ${reason}`);
+  process.exit(1); // 触发 systemd 重启重连
 });
 
 // —— 关键词检测 ——
@@ -691,7 +690,12 @@ client.on('message', async msg => {
       if (media) {
         const ext = mime.extension(media.mimetype) || 'jpg';
         const filename = `img_${Date.now()}.${ext}`;
-        const filepath = path.join(TMP_DIR, filename);
+        // 保存到群组文件夹img目录下的日期文件夹
+        const groupDir = path.join(LOG_DIR, groupId || 'default');
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const imgDir = path.join(groupDir, 'img', dateStr);
+        ensureDir(imgDir);
+        const filepath = path.join(imgDir, filename);
         await fs.writeFile(filepath, media.data, 'base64');
         console.log(`图片已保存: ${filepath}`);
         appendLog(groupId, `图片已保存: ${filepath}`);
@@ -828,7 +832,7 @@ client.on('message', async msg => {
     }
 
     // —— 回复用户 ——
-    if (needReply || replyStr.includes('缺少') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號') && EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId))) {
+    if (needReply || replyStr.includes('缺少') || replyStr.includes('找唔到編號') || replyStr.includes('不符合模版') || (replyStr.includes('申請編號') && EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId))) {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
@@ -1063,7 +1067,6 @@ async function sendTodaySummary() {
     getSummary(GROUP_ID);
     getSummary(GROUP_ID_2);
     getSummary(GROUP_ID_3);
-    getSummary(GROUP_ID_4);
     getSummary(GROUP_ID_7);
     getSummary(GROUP_ID_8);
     appendLog('default', '定时推送已发送');
@@ -1072,7 +1075,6 @@ async function sendTodaySummary() {
     await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
     await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
@@ -1108,6 +1110,16 @@ cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 10-19 * * *', async () => {
   try {
+      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
+      appendLog(GROUP_ID_4, '每小时总结推送成功');
+  } catch (e) {
+      const errMsg = `每小时总结推送失败: ${e.message}`;
+      console.error(e);
+      appendLog(GROUP_ID_4, errMsg);
+  }
+});
+cron.schedule('0 10-19 * * *', async () => {
+  try {
       await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
       appendLog(GROUP_ID_9, '每小时总结推送成功');
   } catch (e) {
@@ -1117,5 +1129,3 @@ cron.schedule('0 10-19 * * *', async () => {
   }
 });
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
-
-

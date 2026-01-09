@@ -129,7 +129,7 @@
     }
   },
   "default": {
-    "botType": "insp-bot",
+    "botType": "ced-bot",
     "dify": {
       "mode": "workflow",
       "agent": {
@@ -144,7 +144,7 @@
     },
     "fastGPT": {
       "url": "https://rgamhdso.sealoshzh.site/api/v1/chat/completions",
-      "apiKey": "fgpt-default1234567890"
+      "apiKey": "openapi-qR6SCptK2Yu8KcYInesHGo7h0Sv2VLKEY5kpPAl9xTrE728rwVDWn7xuI"
     }
   }
 }
