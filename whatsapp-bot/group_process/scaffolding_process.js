@@ -291,17 +291,17 @@ async function processScaffoldingQuery(query, groupId, contactPhone) {
 
   // === 场景 2: 短码优先处理 (Shortcode First) === // 只要有 ID，且有关键字，无视其他字段格式
   if (appId) {
-    // 安全相
-    if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
-      return await handleSafetyById(appId, groupId, contactPhone, query);
+    // 删除
+    if (/刪除|删除|取消/.test(query)) {
+      return await handleDeleteById(appId, groupId, query);
     }
     // 撤离
     if (/撤離|撤离|收工|放工/.test(query)) {
       return await handleLeaveById(appId, groupId, query);
     }
-    // 删除
-    if (/刪除|删除|取消/.test(query)) {
-      return await handleDeleteById(appId, groupId, query);
+    // 安全相
+    if (/安全相|安全帶|扣帶|已扣安全帶/.test(query)) {
+      return await handleSafetyById(appId, groupId, contactPhone, query);
     }
   }
 
