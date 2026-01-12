@@ -1890,6 +1890,204 @@ async function handleProgressSummary(client, groupId) {
   }
 }
 
+// 往日总结函数（昨日總結 + 往日總結）
+async function handlePastSummary(client, groupId) {
+  try {
+    console.log(`[定时任务] 开始执行往日总结，群组: ${groupId}`);
+    appendLog(groupId, `[定时任务] 开始执行往日总结`);
+
+    // 获取群组信息
+    const chat = await client.getChatById(groupId);
+    if (!chat || !chat.isGroup) {
+      console.log(`[定时任务] 群组 ${groupId} 不存在或不是群组，跳过`);
+      return;
+    }
+
+    const groupName = chat.name || chat.contact?.name || chat.groupMetadata?.subject || '未知群組';
+
+    // 调用 FastGPT - 總結（与 handleTodaySummary 相同）
+    let replyStr = null;
+    try {
+      console.log(`[定时任务] 开始调用 FastGPT - 總結`);
+      appendLog(groupId, `[定时任务] 开始调用 FastGPT - 總結`);
+      replyStr = await sendToFastGPT({ 
+        query: '總結', 
+        user: groupId, 
+        group_id: groupId 
+      });
+      console.log(`[定时任务] FastGPT 總結 response: ${replyStr}`);
+      appendLog(groupId, `[定时任务] FastGPT 總結 response: ${replyStr}`);
+    } catch (e) {
+      console.error(`[ERR] 调用總結失败: ${e.message}`);
+      appendLog(groupId, `[ERR] 调用總結失败: ${e.message}`);
+      return;
+    }
+
+    // 发送消息（只发送昨日和前日，跳过今日）
+    if (replyStr) {
+      try {
+        // 检查是否包含日期分段标记
+        const hasDateSegments = replyStr.includes('<<今日>>') || 
+                                replyStr.includes('<<昨日>>') || 
+                                replyStr.includes('<<前日>>');
+        
+        if (hasDateSegments) {
+          // 提取 <<昨日>> 和 <<前日>> 的部分，跳过 <<今日>>
+          const segments = [];
+          const markers = ['<<昨日>>', '<<前日>>']; // 只处理昨日和前日
+          
+          for (let i = 0; i < markers.length; i++) {
+            const marker = markers[i];
+            if (replyStr.includes(marker)) {
+              const startIndex = replyStr.indexOf(marker);
+              // 查找下一个标记（可能是 <<今日>>、<<昨日>> 或 <<前日>>）
+              const nextMarkers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
+              let endIndex = replyStr.length;
+              
+              for (const nextMarker of nextMarkers) {
+                const nextIndex = replyStr.indexOf(nextMarker, startIndex + marker.length);
+                if (nextIndex !== -1 && nextIndex < endIndex) {
+                  endIndex = nextIndex;
+                }
+              }
+              
+              let segment = replyStr.substring(startIndex, endIndex);
+              
+              // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
+              segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
+              
+              if (segment) {
+                segments.push(segment);
+              }
+            }
+          }
+          
+          // 按顺序发送每条消息（昨日在前，前日在后）
+          for (const segment of segments) {
+            console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
+            appendLog(groupId, `尝试发送分段消息`);
+            await client.sendText(groupId, segment);
+            console.log('已发送分段消息');
+            appendLog(groupId, '已发送分段消息');
+            // 添加短暂延迟，避免消息发送过快
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else {
+          // 没有日期分段标记，不发送（因为这是往日总结，需要分段标记）
+          console.log(`[定时任务] 返回结果没有日期分段标记，跳过发送`);
+          appendLog(groupId, `[定时任务] 返回结果没有日期分段标记，跳过发送`);
+        }
+      } catch (e) {
+        console.error(`[ERR] 发送往日總結失败: ${e.message}`);
+        appendLog(groupId, `[ERR] 发送往日總結失败: ${e.message}`);
+      }
+    }
+
+    console.log(`[定时任务] 群组 ${groupId} 往日总结已发送`);
+    appendLog(groupId, `[定时任务] 往日总结已发送`);
+  } catch (err) {
+    console.error(`[ERR] 群组 ${groupId} 发送往日总结失败:`, err);
+    appendLog(groupId, `[ERR] 发送往日总结失败: ${err.message}`);
+  }
+}
+
+// 今日总结函数
+async function handleTodaySummary(client, groupId) {
+  try {
+    console.log(`[定时任务] 开始执行今日总结，群组: ${groupId}`);
+    appendLog(groupId, `[定时任务] 开始执行今日总结`);
+
+    // 获取群组信息
+    const chat = await client.getChatById(groupId);
+    if (!chat || !chat.isGroup) {
+      console.log(`[定时任务] 群组 ${groupId} 不存在或不是群组，跳过`);
+      return;
+    }
+
+    const groupName = chat.name || chat.contact?.name || chat.groupMetadata?.subject || '未知群組';
+
+    // 调用 FastGPT - 總結
+    let replyStr = null;
+    try {
+      console.log(`[定时任务] 开始调用 FastGPT - 總結`);
+      appendLog(groupId, `[定时任务] 开始调用 FastGPT - 總結`);
+      replyStr = await sendToFastGPT({ 
+        query: '總結', 
+        user: groupId, 
+        group_id: groupId 
+      });
+      console.log(`[定时任务] FastGPT 總結 response: ${replyStr}`);
+      appendLog(groupId, `[定时任务] FastGPT 總結 response: ${replyStr}`);
+    } catch (e) {
+      console.error(`[ERR] 调用總結失败: ${e.message}`);
+      appendLog(groupId, `[ERR] 调用總結失败: ${e.message}`);
+      return;
+    }
+
+    // 发送消息
+    if (replyStr) {
+      try {
+        // 检查是否包含日期分段标记
+        const hasDateSegments = replyStr.includes('<<今日>>') || 
+                                replyStr.includes('<<昨日>>') || 
+                                replyStr.includes('<<前日>>');
+        
+        if (hasDateSegments) {
+          // 按照 <<今日>>、<<昨日>>、<<前日>> 的顺序分割并发送
+          const segments = [];
+          const markers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
+          
+          for (let i = 0; i < markers.length; i++) {
+            const marker = markers[i];
+            if (replyStr.includes(marker)) {
+              const startIndex = replyStr.indexOf(marker);
+              const endIndex = i < markers.length - 1 
+                ? replyStr.indexOf(markers[i + 1], startIndex + marker.length)
+                : replyStr.length;
+              
+              let segment = '';
+              if (endIndex === -1) {
+                segment = replyStr.substring(startIndex);
+              } else {
+                segment = replyStr.substring(startIndex, endIndex);
+              }
+              
+              // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
+              segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
+              segments.push(segment);
+            }
+          }
+          
+          // 按顺序发送每条消息
+          for (const segment of segments) {
+            console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
+            appendLog(groupId, `尝试发送分段消息`);
+            await client.sendText(groupId, segment);
+            console.log('已发送分段消息');
+            appendLog(groupId, '已发送分段消息');
+            // 添加短暂延迟，避免消息发送过快
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else {
+          // 没有日期分段标记，直接发送
+          await client.sendText(groupId, replyStr);
+          console.log(`[定时任务] 已发送今日總結`);
+          appendLog(groupId, `[定时任务] 已发送今日總結`);
+        }
+      } catch (e) {
+        console.error(`[ERR] 发送今日總結失败: ${e.message}`);
+        appendLog(groupId, `[ERR] 发送今日總結失败: ${e.message}`);
+      }
+    }
+
+    console.log(`[定时任务] 群组 ${groupId} 今日总结已发送`);
+    appendLog(groupId, `[定时任务] 今日总结已发送`);
+  } catch (err) {
+    console.error(`[ERR] 群组 ${groupId} 发送今日总结失败:`, err);
+    appendLog(groupId, `[ERR] 发送今日总结失败: ${err.message}`);
+  }
+}
+
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -2838,6 +3036,27 @@ function start(client) {
     console.log('[特殊定时任务] 今天 16:00 AI 进度总结（香港时区）');
     for (const groupId of targetGroups) {
       await handleProgressSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  // 往日总结：每天早上8:30（香港时区）
+  const pastSummaryGroups = ['120363405664890751@g.us'];
+  cron.schedule('30 8 * * *', async () => {
+    console.log('[定时任务] 开始执行 8:30 往日总结（香港时区）');
+    for (const groupId of pastSummaryGroups) {
+      await handlePastSummary(client, groupId);
+    }
+  }, {
+    timezone: 'Asia/Hong_Kong'
+  });
+
+  // 今日总结：每天早上8:30（香港时区）
+  cron.schedule('30 18 * * *', async () => {
+    console.log('[定时任务] 开始执行 18:30 今日总结（香港时区）');
+    for (const groupId of pastSummaryGroups) {
+      await handleTodaySummary(client, groupId);
     }
   }, {
     timezone: 'Asia/Hong_Kong'
