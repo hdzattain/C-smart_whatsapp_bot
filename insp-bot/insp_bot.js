@@ -67,10 +67,9 @@ const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
 const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
 // Lark 事件回调配置
 // const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
-// 测试群组：120363422955145686@g.us
 const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
   ? process.env.LARK_TARGET_GROUPS.split(',').map(g => g.trim())
-  : ['120363422955145686@g.us']; // 默认测试群组
+  : []; // 从环境变量读取，未配置则为空数组
 
 // === 健康检查状态 ===
 let state = { status: 'STARTING' };
@@ -2908,7 +2907,6 @@ function start(client) {
   });
 
   // Cron Jobs
-  const GROUP_ID = '120363418441024423@g.us';
   cron.schedule('0 18 * * *', async () => {
     console.log('[定时任务] 开始执行 18:00 未撤离分判检查');
     const today = new Date().toISOString().slice(0, 10);
@@ -2979,7 +2977,9 @@ function start(client) {
   });
 
   // 定时任务：对指定群组发送 AI 进度更新和总结
-  const targetGroups = ['120363268268186143@g.us', '120363422955145686@g.us'];
+  const targetGroups = process.env.AI_ANDACHEN_TARGET_GROUPS
+    ? process.env.AI_ANDACHEN_TARGET_GROUPS.split(',').map(g => g.trim())
+    : [];
 
   // AI 进度更新：每天下午5点（香港时区 UTC+8）
   // 如果服务器是 UTC，17:00 HKT = 09:00 UTC；如果服务器是 HKT，直接使用 17:00
@@ -3041,11 +3041,15 @@ function start(client) {
     timezone: 'Asia/Hong_Kong'
   });
 
+  // 总结目标群组（往日总结和今日总结共用）
+  const summaryGroups = process.env.SAFETYBOT_GROUPS
+    ? process.env.SAFETYBOT_GROUPS.split(',').map(g => g.trim())
+    : [];
+  
   // 往日总结：每天早上8:30（香港时区）
-  const pastSummaryGroups = ['120363405664890751@g.us'];
   cron.schedule('30 8 * * *', async () => {
     console.log('[定时任务] 开始执行 8:30 往日总结（香港时区）');
-    for (const groupId of pastSummaryGroups) {
+    for (const groupId of summaryGroups) {
       await handlePastSummary(client, groupId);
     }
   }, {
@@ -3055,7 +3059,7 @@ function start(client) {
   // 今日总结：每天早上8:30（香港时区）
   cron.schedule('30 18 * * *', async () => {
     console.log('[定时任务] 开始执行 18:30 今日总结（香港时区）');
-    for (const groupId of pastSummaryGroups) {
+    for (const groupId of summaryGroups) {
       await handleTodaySummary(client, groupId);
     }
   }, {
