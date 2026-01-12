@@ -38,6 +38,9 @@ const rimraf = require('rimraf');  // 异步版本：使用 rimraf.promises 或 
 const cron = require('node-cron');  // 定时任务
 const { v4: uuidv4 } = require('uuid');  // UUID 生成
 
+// 飞书 SDK
+const lark = require('@larksuiteoapi/node-sdk');
+
 // === 常量 & 配置加载 ===
 const LOG_DIR = path.join(__dirname, 'logs');
 const TMP_DIR = path.join(__dirname, 'tmp');
@@ -70,6 +73,15 @@ const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
 const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
   ? process.env.LARK_TARGET_GROUPS.split(',').map(g => g.trim())
   : []; // 从环境变量读取，未配置则为空数组
+
+// 飞书 SDK 客户端初始化
+const LARK_APP_ID = process.env.LARK_APP_ID || 'app id';
+const LARK_APP_SECRET = process.env.LARK_APP_SECRET || 'app secret';
+const larkClient = new lark.Client({
+  appId: LARK_APP_ID,
+  appSecret: LARK_APP_SECRET,
+  disableTokenCache: false  // SDK 自动管理租户 token 的获取与刷新
+});
 
 // === 健康检查状态 ===
 let state = { status: 'STARTING' };
@@ -874,6 +886,102 @@ async function uploadImageToFeishu(filepath) {
   }
 }
 
+// 使用飞书 node-sdk 上传文件
+async function uploadFileToFeishuWithSDK(filepath, options = {}) {
+  try {
+    // 获取文件信息
+    const stats = fs.statSync(filepath);
+    const fileSize = stats.size;
+    const fileName = options.fileName || path.basename(filepath);
+    
+    // 判断是否为多维表格上传场景
+    // 如果明确指定 isBitable 为 true，或者 parentType 包含 bitable，则认为是多维表格场景
+    const isBitable = options.isBitable === true || options.parentType?.includes('bitable');
+    
+    // 确定 parent_type 和 parent_node
+    let parentType = options.parentType;
+    let parentNode = options.parentNode;
+    
+    if (isBitable) {
+      // 多维表格场景：使用多维表格 token
+      const bitableToken = options.parentNode || options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN || process.env.LARK_PARENT_NODE;
+      if (!bitableToken) {
+        throw new Error('多维表格上传需要配置 LARK_DRIVE_ROUTE_TOKEN 环境变量，或通过 options.parentNode/options.driveRouteToken 提供');
+      }
+      parentType = parentType || 'bitable_image'; // 多维表格上传图片使用 bitable_image
+      parentNode = bitableToken; // 多维表格场景下，parent_node 就是多维表格的 token
+    } else {
+      // 其他场景
+      parentType = parentType || 'docx_image';
+      parentNode = parentNode || process.env.LARK_PARENT_NODE || '';
+    }
+    
+    if (!parentNode) {
+      throw new Error('parent_node 参数必需，请通过 options.parentNode 或环境变量提供');
+    }
+    
+    // 构建 extra 参数（用于上传素材至云文档场景）
+    // extra 格式: {"drive_route_token":"素材所在云文档的 token"}
+    let extra = options.extra;
+    if (!extra) {
+      const driveRouteToken = options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN;
+      if (driveRouteToken) {
+        extra = JSON.stringify({ drive_route_token: driveRouteToken });
+      }
+    }
+    
+    // 使用流而不是 Buffer
+    const fileStream = fs.createReadStream(filepath);
+    
+    const requestData = {
+      file_name: fileName,
+      parent_type: parentType,
+      parent_node: parentNode,
+      size: fileSize,
+      file: fileStream,
+    };
+    
+    // 如果提供了 extra 参数，添加到请求中
+    if (extra) {
+      requestData.extra = extra;
+    }
+    
+    const res = await larkClient.drive.v1.media.uploadAll({
+      data: requestData,
+    });
+
+    console.log(`[LOG] 飞书 SDK 上传响应: ${JSON.stringify(res)}`);
+
+    // 根据飞书 SDK 返回的数据结构获取 file token
+    // 标准格式: {code: 0, msg: "success", data: {file_token: "..."}}
+    // 如果 code !== 0，表示上传失败
+    if (res.code !== undefined && res.code !== 0) {
+      throw new Error(`上传失败: code=${res.code}, msg=${res.msg || '未知错误'}, 返回数据: ${JSON.stringify(res)}`);
+    }
+    
+    // 支持多种返回格式：
+    // 1. {code: 0, data: {file_token: "..."}} - 标准格式
+    // 2. {data: {file_token: "..."}} - 没有 code 字段
+    // 3. {file_token: "..."} - 直接返回（SDK 可能已解析）
+    let fileToken = null;
+    if (res.data && res.data.file_token) {
+      fileToken = res.data.file_token;
+    } else if (res.file_token) {
+      fileToken = res.file_token;
+    }
+    
+    if (fileToken) {
+      console.log(`[LOG] 成功获取 file_token: ${fileToken}`);
+      return fileToken;
+    } else {
+      throw new Error(`上传失败: 未找到 file_token，返回数据: ${JSON.stringify(res)}`);
+    }
+  } catch (err) {
+    console.error(`[ERR] 飞书 SDK 上传失败: ${err.message}`, err);
+    throw new Error(`飞书 SDK 上传失败: ${err.message}`);
+  }
+}
+
 function containsSummaryKeyword(text) {
   const keywords = [
     '总结', '概括', '总结一下', '整理情况', '汇总', '回顾',
@@ -1585,13 +1693,14 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
         await fsPromises.writeFile(tempFilePath, Buffer.from(base64Data, 'base64'));
 
         // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
-        const imageUrl = await uploadImageToFeishu(tempFilePath); // 假设支持文档
-        console.log(`[LOG] 媒体已上传到飞书，URL: ${imageUrl}`);
-        images.push(imageUrl);
+        // 使用多维表格上传（自动从环境变量读取 LARK_DRIVE_ROUTE_TOKEN）
+        const image_token = await uploadFileToFeishuWithSDK(tempFilePath, { isBitable: true });
+        console.log(`[LOG] 媒体已上传到飞书，ID: ${image_token}`);
+        images.push(image_token);
 
         // 将图片URL添加到query中
-        if (imageUrl) {
-          query += ` [图片URL: ${imageUrl}]`;
+        if (image_token) {
+          query += ` [图片ID: ${image_token}]`;
         }
 
         // 清理临时文件
