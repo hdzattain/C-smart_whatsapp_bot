@@ -605,6 +605,117 @@ def mail_receive():
         return _json_error("收取邮件失败", 502, code="mail_receive_failed", detail=str(e))
 
 
+@app.route("/mail/receive_from_db", methods=["GET", "POST"])
+def mail_receive_from_db():
+    """
+    从数据库读取邮箱账号列表并收取邮件
+    - 不需要密码，从 email_accounts 表自动读取并解密
+    - email_account 可选：指定则只处理该邮箱，不指定则处理所有邮箱
+    - receive_number 可选：指定收取邮件数量，默认 20
+    - unread_only 可选：是否只获取未读邮件，默认 false（全部获取）
+    - mailbox 可选：指定邮箱文件夹，默认 inbox
+    """
+    # 隐私要求：不允许使用 URL query 传任何参数（避免进 nginx/flask 日志）
+    if request.args:
+        return _json_error("隐私要求：/mail/receive_from_db 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        # email_account 为可选，如果不指定则处理所有邮箱
+        email_account = data.get("email_account")
+        if email_account:
+            email_account = str(email_account).strip()
+        
+        # 生产推荐：server/port 从环境变量读取，调用方无需传
+        imap_server = data.get("IMAP_SERVER") or data.get("imap_server") or DEFAULT_IMAP_SERVER
+        imap_port = data.get("IMAP_PORT") or data.get("imap_port") or DEFAULT_IMAP_PORT
+        if not imap_server:
+            raise ValueError("缺少参数: IMAP_SERVER（建议用环境变量 DEFAULT_IMAP_SERVER 配置）")
+        if imap_port is None:
+            raise ValueError("缺少参数: IMAP_PORT（建议用环境变量 DEFAULT_IMAP_PORT 配置）")
+        imap_server = str(imap_server).strip()
+        imap_port = int(imap_port)
+        receive_number = _as_int(data.get("receive_number", 20), 20)
+        # 支持选择邮箱文件夹，默认 inbox
+        mailbox = data.get("mailbox") or data.get("folder") or "inbox"
+        # 支持只获取未读邮件，默认 false（全部获取）
+        unread_only = data.get("unread_only", False)
+        if isinstance(unread_only, str):
+            unread_only = unread_only.lower() in ("true", "1", "yes")
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    try:
+        # 从数据库读取邮箱账号列表
+        if email_account:
+            # 指定单个邮箱
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            accounts = execute_query(sql, (email_account,), fetch=True)
+        else:
+            # 不指定则读取所有邮箱
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            accounts = execute_query(sql, (), fetch=True)
+        
+        if not accounts:
+            return _json_error("未找到邮箱账号", 404, code="no_email_accounts")
+        
+        # 处理每个邮箱账号
+        all_results = []
+        errors = []
+        
+        for account_row in accounts:
+            acc = account_row.get("email_account")
+            encrypted_pwd = account_row.get("encrypted_password")
+            
+            if not acc or not encrypted_pwd:
+                errors.append({"email_account": acc, "error": "账号或密码为空"})
+                continue
+            
+            try:
+                # 解密密码
+                email_password = decrypt_password(encrypted_pwd)
+            except Exception as e:
+                errors.append({"email_account": acc, "error": f"密码解密失败: {str(e)}"})
+                continue
+            
+            try:
+                # 收取邮件
+                res = receive_emails_imap(
+                    email_account=acc,
+                    email_password=email_password,
+                    imap_server=imap_server,
+                    imap_port=imap_port,
+                    receive_number=receive_number,
+                    mailbox=mailbox,
+                    unread_only=unread_only,
+                )
+                all_results.append({
+                    "email_account": acc,
+                    "ok": True,
+                    **res
+                })
+            except Exception as e:
+                errors.append({
+                    "email_account": acc,
+                    "error": str(e)
+                })
+        
+        return jsonify({
+            "ok": True,
+            "results": all_results,
+            "errors": errors,
+            "total_accounts": len(accounts),
+            "success_count": len(all_results),
+            "error_count": len(errors)
+        })
+    except Exception as e:
+        # 不回显账号/密码，仅回显错误原因
+        return _json_error("收取邮件失败", 502, code="mail_receive_failed", detail=str(e))
+
+
 @app.route("/mail/send", methods=["POST"])
 def mail_send():
     # 隐私要求：不允许使用 URL query 传任何参数（避免进 nginx/flask 日志）
