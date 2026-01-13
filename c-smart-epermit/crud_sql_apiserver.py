@@ -543,6 +543,61 @@ def send_email_smtp(
         raise RuntimeError(f"SMTP 发送失败: {str(e)}") from e
 
 
+def mark_emails_unread_imap(
+    email_account,
+    email_password,
+    imap_server,
+    imap_port,
+    email_uids,
+    mailbox="inbox"
+):
+    """
+    将指定邮件标记为未读
+    - email_uids: 邮件 UID 列表（字符串或整数列表）
+    - mailbox: 邮箱文件夹，默认 inbox
+    """
+    mail = None
+    try:
+        mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        mail.login(email_account, email_password)
+        
+        mailbox_name = str(mailbox).strip() if mailbox else "inbox"
+        mail.select(mailbox_name)
+        
+        # 处理 UID 列表
+        if isinstance(email_uids, str):
+            uid_list = [uid.strip() for uid in email_uids.split(",")]
+        elif isinstance(email_uids, list):
+            uid_list = [str(uid) for uid in email_uids]
+        else:
+            uid_list = [str(email_uids)]
+        
+        # 移除 \Seen 标志（标记为未读）
+        # 使用 -FLAGS 来移除标志
+        marked_count = 0
+        for uid in uid_list:
+            try:
+                # 移除 \Seen 标志
+                status, response = mail.uid("store", uid, "-FLAGS", "\\Seen")
+                if status == "OK":
+                    marked_count += 1
+            except Exception as e:
+                # 单个邮件失败不影响其他邮件
+                continue
+        
+        return {"ok": True, "marked_count": marked_count, "total": len(uid_list)}
+    except imaplib.IMAP4.error as e:
+        raise RuntimeError(f"IMAP 操作失败: {str(e)}") from e
+    except Exception as e:
+        raise RuntimeError(f"标记邮件为未读失败: {str(e)}") from e
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+
 # --- Routes ---
 @app.route('/')
 def index():
@@ -762,6 +817,155 @@ def mail_send():
         return jsonify(res)
     except Exception as e:
         return _json_error("发送邮件失败", 502, code="mail_send_failed", detail=str(e))
+
+
+@app.route("/mail/mark_unread", methods=["POST"])
+def mail_mark_unread():
+    """
+    将邮件标记为未读
+    - email_account, email_password: 邮箱账号密码
+    - email_uids: 邮件 UID（字符串、整数或列表），多个用逗号分隔
+    - mailbox: 邮箱文件夹，默认 inbox
+    """
+    # 隐私要求：不允许使用 URL query 传任何参数
+    if request.args:
+        return _json_error("隐私要求：/mail/mark_unread 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = _require_str(data, "email_account")
+        email_password = _require_str(data, "email_password")
+        imap_server = data.get("IMAP_SERVER") or data.get("imap_server") or DEFAULT_IMAP_SERVER
+        imap_port = data.get("IMAP_PORT") or data.get("imap_port") or DEFAULT_IMAP_PORT
+        if not imap_server:
+            raise ValueError("缺少参数: IMAP_SERVER")
+        if imap_port is None:
+            raise ValueError("缺少参数: IMAP_PORT")
+        imap_server = str(imap_server).strip()
+        imap_port = int(imap_port)
+        
+        email_uids = data.get("email_uids") or data.get("uid") or data.get("uids")
+        if not email_uids:
+            raise ValueError("缺少参数: email_uids")
+        
+        mailbox = data.get("mailbox") or data.get("folder") or "inbox"
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    try:
+        res = mark_emails_unread_imap(
+            email_account=email_account,
+            email_password=email_password,
+            imap_server=imap_server,
+            imap_port=imap_port,
+            email_uids=email_uids,
+            mailbox=mailbox,
+        )
+        return jsonify(res)
+    except Exception as e:
+        return _json_error("标记邮件为未读失败", 502, code="mail_mark_unread_failed", detail=str(e))
+
+
+@app.route("/mail/mark_unread_from_db", methods=["POST"])
+def mail_mark_unread_from_db():
+    """
+    从数据库读取邮箱账号并标记邮件为未读
+    - email_account 可选：指定则只处理该邮箱，不指定则处理所有邮箱
+    - email_uids: 邮件 UID（字符串、整数或列表），多个用逗号分隔
+    - mailbox: 邮箱文件夹，默认 inbox
+    """
+    # 隐私要求：不允许使用 URL query 传任何参数
+    if request.args:
+        return _json_error("隐私要求：/mail/mark_unread_from_db 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = data.get("email_account")
+        if email_account:
+            email_account = str(email_account).strip()
+        
+        imap_server = data.get("IMAP_SERVER") or data.get("imap_server") or DEFAULT_IMAP_SERVER
+        imap_port = data.get("IMAP_PORT") or data.get("imap_port") or DEFAULT_IMAP_PORT
+        if not imap_server:
+            raise ValueError("缺少参数: IMAP_SERVER")
+        if imap_port is None:
+            raise ValueError("缺少参数: IMAP_PORT")
+        imap_server = str(imap_server).strip()
+        imap_port = int(imap_port)
+        
+        email_uids = data.get("email_uids") or data.get("uid") or data.get("uids")
+        if not email_uids:
+            raise ValueError("缺少参数: email_uids")
+        
+        mailbox = data.get("mailbox") or data.get("folder") or "inbox"
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    try:
+        # 从数据库读取邮箱账号列表
+        if email_account:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            accounts = execute_query(sql, (email_account,), fetch=True)
+        else:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            accounts = execute_query(sql, (), fetch=True)
+        
+        if not accounts:
+            return _json_error("未找到邮箱账号", 404, code="no_email_accounts")
+        
+        # 处理每个邮箱账号
+        all_results = []
+        errors = []
+        
+        for account_row in accounts:
+            acc = account_row.get("email_account")
+            encrypted_pwd = account_row.get("encrypted_password")
+            
+            if not acc or not encrypted_pwd:
+                errors.append({"email_account": acc, "error": "账号或密码为空"})
+                continue
+            
+            try:
+                email_password = decrypt_password(encrypted_pwd)
+            except Exception as e:
+                errors.append({"email_account": acc, "error": f"密码解密失败: {str(e)}"})
+                continue
+            
+            try:
+                res = mark_emails_unread_imap(
+                    email_account=acc,
+                    email_password=email_password,
+                    imap_server=imap_server,
+                    imap_port=imap_port,
+                    email_uids=email_uids,
+                    mailbox=mailbox,
+                )
+                all_results.append({
+                    "email_account": acc,
+                    **res
+                })
+            except Exception as e:
+                errors.append({
+                    "email_account": acc,
+                    "error": str(e)
+                })
+        
+        return jsonify({
+            "ok": True,
+            "results": all_results,
+            "errors": errors,
+            "total_accounts": len(accounts),
+            "success_count": len(all_results),
+            "error_count": len(errors)
+        })
+    except Exception as e:
+        return _json_error("标记邮件为未读失败", 502, code="mail_mark_unread_failed", detail=str(e))
 
 
 @app.route("/records", methods=["POST"])
