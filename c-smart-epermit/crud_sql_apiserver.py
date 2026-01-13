@@ -20,6 +20,12 @@ from html import unescape
 import os
 from zhconv import convert
 import json
+from cryptography.fernet import Fernet
+import base64
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -54,6 +60,92 @@ FIELDS = [
     "afternoon", "xiaban", "subcontractor", "part_leave_number",
     "process", "time_range", "building", "update_history", "update_safety_history", "update_construct_history", "safety_flag", "application_id"
 ]
+
+# --- jiaodika 表配置 ---
+JIAODIKA_TABLE = "jiaodika"
+JIAODIKA_FIELDS = [
+    "id",
+    "bstudio_create_time",
+    "file",
+    "gongchengfenlei",
+    "gongxu",
+    "zhuyaocailiao",
+    "gongjushebei",
+    "gongrenzige",
+    "caozuogongyi",
+    "yanshoubiaozhun",
+    "anquanshixiang",
+    "huanbaoshixiang",
+    "drawings",
+    "keydiagrams",
+    "mockups",
+    "updated_at",
+]
+
+# --- 邮箱账号密码表配置 ---
+EMAIL_ACCOUNT_TABLE = "email_accounts"
+EMAIL_ACCOUNT_FIELDS = [
+    "id",
+    "email_account",
+    "encrypted_password",
+    "description",
+    "created_at",
+    "updated_at",
+]
+
+# --- 加密密钥配置 ---
+# 从 .env 文件读取 EMAIL_ENCRYPTION_KEY，如果没有则生成默认密钥（生产环境请务必在 .env 中设置）
+ENCRYPTION_KEY_RAW = os.getenv("EMAIL_ENCRYPTION_KEY")
+if not ENCRYPTION_KEY_RAW:
+    # 默认密钥（仅用于开发，生产环境必须在 .env 文件中设置 EMAIL_ENCRYPTION_KEY）
+    # 生成一个固定的密钥用于开发环境
+    default_key_material = b"default_key_for_dev_only_change_in_production_32bytes!!"
+    _fernet_key = base64.urlsafe_b64encode(default_key_material[:32])
+else:
+    # 如果 .env 文件提供了密钥
+    try:
+        # 尝试作为 base64 字符串直接使用
+        _fernet_key = ENCRYPTION_KEY_RAW.encode()
+        # 验证格式
+        base64.urlsafe_b64decode(_fernet_key)
+    except Exception:
+        # 如果不是有效的 base64，将原始字符串转换为密钥
+        key_material = ENCRYPTION_KEY_RAW.encode()
+        if len(key_material) < 32:
+            key_material = key_material.ljust(32, b"0")
+        elif len(key_material) > 32:
+            key_material = key_material[:32]
+        _fernet_key = base64.urlsafe_b64encode(key_material)
+
+# 初始化加密器
+try:
+    _fernet = Fernet(_fernet_key)
+except Exception as e:
+    # 如果密钥格式错误，直接报错，不生成新密钥
+    raise RuntimeError(f"EMAIL_ENCRYPTION_KEY 格式错误，无法初始化加密器: {str(e)}")
+
+
+# --- 加密/解密工具函数 ---
+def encrypt_password(password: str) -> str:
+    """加密密码"""
+    if not password:
+        return ""
+    try:
+        encrypted = _fernet.encrypt(password.encode())
+        return encrypted.decode()
+    except Exception as e:
+        raise RuntimeError(f"密码加密失败: {str(e)}")
+
+
+def decrypt_password(encrypted_password: str) -> str:
+    """解密密码"""
+    if not encrypted_password:
+        return ""
+    try:
+        decrypted = _fernet.decrypt(encrypted_password.encode())
+        return decrypted.decode()
+    except Exception as e:
+        raise RuntimeError(f"密码解密失败: {str(e)}")
 
 
 # --- DB Utility ---
@@ -306,14 +398,21 @@ def _as_int(v, default):
 
 def _parse_mail_date_to_iso(date_value: str) -> Optional[str]:
     """
-    解析邮件头 Date 为 ISO8601 字符串。
+    解析邮件头 Date 为 ISO8601 字符串（北京时间 UTC+8）。
     失败则返回 None。
     """
     try:
         dt = parsedate_to_datetime(date_value)
         if dt is None:
             return None
-        return dt.isoformat()
+        # 转换为北京时间（UTC+8）
+        if dt.tzinfo is None:
+            # 如果没有时区信息，假设为UTC
+            dt = pytz.UTC.localize(dt)
+        # 转换为北京时间
+        beijing_tz = pytz.timezone("Asia/Shanghai")
+        dt_beijing = dt.astimezone(beijing_tz)
+        return dt_beijing.isoformat()
     except Exception:
         return None
 
@@ -1333,6 +1432,376 @@ def show_columns():
     sql = f"SHOW COLUMNS FROM `{table}`"
     rows = execute_query(sql, fetch=True)
     return jsonify({"columns": [row["Field"] for row in rows]})
+
+
+
+@app.route("/convert", methods=["POST"])
+def convert_text():
+    """
+    中文转换接口
+    接收原始文本作为 body，target 通过 query 参数或 header 指定（默认 zh-hant）
+    支持的 target: zh-cn, zh-tw, zh-hk, zh-sg, zh-hans, zh-hant
+    返回: {"ok": True, "result": "转换后的文本"}
+    """
+    # 直接读取原始文本内容
+    text = request.get_data(as_text=True)
+    if not text:
+        return _json_error("缺少文本内容", 400)
+    
+    # 从 query 参数或 header 获取 target，默认 zh-hant
+    target = request.args.get("target") or request.headers.get("X-Target", "zh-hant")
+    
+    valid_targets = ["zh-cn", "zh-tw", "zh-hk", "zh-sg", "zh-hans", "zh-hant"]
+    if target not in valid_targets:
+        return _json_error(
+            f"参数 target 无效，支持的值: {', '.join(valid_targets)}", 
+            400,
+            code="invalid_target"
+        )
+    
+    try:
+        result = convert(text, target)
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return _json_error("转换失败", 500, code="convert_failed", detail=str(e))
+
+
+# ==========================
+# jiaodika 表：查询 & 更新
+# ==========================
+
+
+@app.route("/jiaodika", methods=["GET"])
+def list_jiaodika():
+    """
+    查询 jiaodika 表
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 仅支持已知字段过滤（JIAODIKA_FIELDS）
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in JIAODIKA_FIELDS:
+            if k == "bstudio_create_time" and v:
+                # 支持传 YYYY-MM-DD，按一天范围查
+                try:
+                    dt = datetime.strptime(v[:10], "%Y-%m-%d")
+                    start = dt.strftime("%Y-%m-%d 00:00:00")
+                    end = dt.strftime("%Y-%m-%d 23:59:59")
+                    conditions.append("`bstudio_create_time` BETWEEN %s AND %s")
+                    params.extend([start, end])
+                    continue
+                except Exception:
+                    # 解析失败则按等值匹配
+                    pass
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{JIAODIKA_TABLE}` {where} ORDER BY `id`"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
+
+def _insert_one_jiaodika(data: dict):
+    """
+    插入一条 jiaodika 记录
+    - 允许部分字段缺省，只插入提供的字段
+    - 自动填充 bstudio_create_time / updated_at（如未提供）
+    """
+    if not isinstance(data, dict):
+        return {"error": "每条记录必须是 JSON 对象"}
+
+    # 自动时间
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    record = {}
+    for k in JIAODIKA_FIELDS:
+        if k == "id":
+            # 一般由数据库自增，如需手动传入也允许
+            if "id" in data:
+                record["id"] = data.get("id")
+            continue
+        if k == "bstudio_create_time":
+            record[k] = data.get(k) or now_str
+            continue
+        if k == "updated_at":
+            record[k] = data.get(k) or now_str
+            continue
+        if k in data:
+            record[k] = data.get(k)
+
+    # 只插入有值的字段
+    cols = []
+    vals = []
+    for k, v in record.items():
+        if v is not None:
+            cols.append(f"`{k}`")
+            vals.append(v)
+
+    if not cols:
+        return {"error": "没有可插入字段"}
+
+    placeholders = ", ".join(["%s"] * len(cols))
+    cols_sql = ", ".join(cols)
+    sql = f"INSERT INTO `{JIAODIKA_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+
+    try:
+        affected = execute_query(sql, tuple(vals))
+        return {"status": "ok", "affected_rows": affected}
+    except Exception as e:
+        return {"error": "插入失败", "detail": str(e)}
+
+
+@app.route("/jiaodika", methods=["POST"])
+def create_jiaodika():
+    """
+    新增 jiaodika 记录
+    - 支持单条：body 为 JSON 对象
+    - 支持批量：body 为 JSON 数组
+    """
+    data = request.get_json(force=True)
+
+    # 批量
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_jiaodika(rec)
+            results.append(res)
+        # 有错误时返回 207，和 /records 接口风格保持一致
+        has_error = any(isinstance(r, dict) and r.get("error") for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    # 单条
+    res = _insert_one_jiaodika(data)
+    if isinstance(res, dict) and res.get("error"):
+        # 和上面 /records 保持类似语义，这里直接 200 兼容现有调用方式
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+@app.route("/jiaodika/<int:record_id>", methods=["PUT"])
+def update_jiaodika(record_id):
+    """
+    按 id 更新 jiaodika 表
+    - body 为要更新的字段，忽略 id
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    updates = [f"`{k}`=%s" for k in data if k in JIAODIKA_FIELDS and k != "id"]
+    if not updates:
+        return jsonify({"error": "无可更新字段"}), 400
+
+    sql = f"UPDATE `{JIAODIKA_TABLE}` SET {', '.join(updates)} WHERE `id`=%s"
+    params = tuple(data[k] for k in data if k in JIAODIKA_FIELDS and k != "id") + (record_id,)
+
+    affected = execute_query(sql, params)
+    if affected == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "updated_id": record_id})
+
+
+# ==========================
+# 邮箱账号密码表：CRUD 接口
+# ==========================
+
+@app.route("/email_accounts", methods=["GET"])
+def list_email_accounts():
+    """
+    查询邮箱账号列表
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 返回时自动解密密码字段
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in EMAIL_ACCOUNT_FIELDS:
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{EMAIL_ACCOUNT_TABLE}` {where} ORDER BY `id`"
+    rows = execute_query(sql, tuple(params), fetch=True)
+
+    # 解密密码字段
+    for row in rows:
+        if row.get("encrypted_password"):
+            try:
+                row["password"] = decrypt_password(row["encrypted_password"])
+            except Exception as e:
+                row["password"] = None
+                row["decrypt_error"] = str(e)
+        # 不返回加密后的密码字段
+        if "encrypted_password" in row:
+            del row["encrypted_password"]
+
+    return jsonify(rows)
+
+
+@app.route("/email_accounts", methods=["POST"])
+def create_email_account():
+    """
+    新增邮箱账号
+    - 支持单条：body 为 JSON 对象
+    - 支持批量：body 为 JSON 数组
+    - password 字段明文传入，自动加密存储
+    """
+    data = request.get_json(force=True)
+
+    # 批量
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_email_account(rec)
+            results.append(res)
+        has_error = any(isinstance(r, dict) and r.get("error") for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    # 单条
+    res = _insert_one_email_account(data)
+    if isinstance(res, dict) and res.get("error"):
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+def _insert_one_email_account(data: dict):
+    """插入一条邮箱账号记录"""
+    if not isinstance(data, dict):
+        return {"error": "每条记录必须是 JSON 对象"}
+
+    # 校验必填字段
+    if not data.get("email_account"):
+        return {"error": "缺少必填字段: email_account"}
+
+    # 处理密码：明文输入，加密存储
+    password = data.get("password") or data.get("email_password", "")
+    if not password:
+        return {"error": "缺少必填字段: password"}
+
+    try:
+        encrypted_password = encrypt_password(password)
+    except Exception as e:
+        return {"error": f"密码加密失败: {str(e)}"}
+
+    # 构造记录
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        "email_account": data.get("email_account"),
+        "encrypted_password": encrypted_password,
+        "description": data.get("description", ""),
+        "created_at": data.get("created_at") or now_str,
+        "updated_at": data.get("updated_at") or now_str,
+    }
+
+    # 如果提供了 id，也插入
+    if "id" in data:
+        record["id"] = data.get("id")
+
+    # 构建 SQL
+    cols = [f"`{k}`" for k in record.keys()]
+    placeholders = ", ".join(["%s"] * len(cols))
+    cols_sql = ", ".join(cols)
+    sql = f"INSERT INTO `{EMAIL_ACCOUNT_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+
+    try:
+        affected = execute_query(sql, tuple(record.values()))
+        return {"status": "ok", "affected_rows": affected}
+    except Exception as e:
+        return {"error": "插入失败", "detail": str(e)}
+
+
+@app.route("/email_accounts/<int:record_id>", methods=["GET"])
+def get_email_account(record_id):
+    """按 id 查询邮箱账号（自动解密密码）"""
+    sql = f"SELECT * FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `id`=%s"
+    rows = execute_query(sql, (record_id,), fetch=True)
+    if not rows:
+        return jsonify({"error": "未找到该记录"}), 404
+
+    row = rows[0]
+    # 解密密码
+    if row.get("encrypted_password"):
+        try:
+            row["password"] = decrypt_password(row["encrypted_password"])
+        except Exception as e:
+            row["password"] = None
+            row["decrypt_error"] = str(e)
+    # 不返回加密后的密码字段
+    if "encrypted_password" in row:
+        del row["encrypted_password"]
+
+    return jsonify(row)
+
+
+@app.route("/email_accounts/<int:record_id>", methods=["PUT"])
+def update_email_account(record_id):
+    """
+    按 id 更新邮箱账号
+    - body 为要更新的字段，忽略 id
+    - 如果提供了 password 字段（明文），会自动加密后更新 encrypted_password
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    # 处理密码字段
+    if "password" in data or "email_password" in data:
+        password = data.get("password") or data.get("email_password", "")
+        try:
+            encrypted_password = encrypt_password(password)
+            data["encrypted_password"] = encrypted_password
+            # 移除明文密码字段
+            data.pop("password", None)
+            data.pop("email_password", None)
+        except Exception as e:
+            return jsonify({"error": f"密码加密失败: {str(e)}"}), 400
+
+    # 自动更新 updated_at
+    data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    updates = [f"`{k}`=%s" for k in data if k in EMAIL_ACCOUNT_FIELDS and k != "id"]
+    if not updates:
+        return jsonify({"error": "无可更新字段"}), 400
+
+    sql = f"UPDATE `{EMAIL_ACCOUNT_TABLE}` SET {', '.join(updates)} WHERE `id`=%s"
+    params = tuple(data[k] for k in data if k in EMAIL_ACCOUNT_FIELDS and k != "id") + (record_id,)
+
+    affected = execute_query(sql, params)
+    if affected == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "updated_id": record_id})
+
+
+@app.route("/email_accounts/<int:record_id>", methods=["DELETE"])
+def delete_email_account(record_id):
+    """按 id 删除邮箱账号"""
+    sql = f"DELETE FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `id`=%s"
+    deleted = execute_query(sql, (record_id,))
+    if deleted == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "deleted_id": record_id})
+
+
+
+
+
+
 
 
 if __name__ == "__main__":
