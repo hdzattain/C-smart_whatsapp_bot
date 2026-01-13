@@ -359,6 +359,22 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
             from_addr = _decode_mime_header(msg.get("From"))
             date_header = _decode_mime_header(msg.get("Date"))
             date_iso = _parse_mail_date_to_iso(date_header) if date_header else None
+            
+            # 将 date 字段也转换为北京时间格式
+            date_beijing = None
+            if date_header:
+                try:
+                    dt = parsedate_to_datetime(date_header)
+                    if dt:
+                        if dt.tzinfo is None:
+                            dt = pytz.UTC.localize(dt)
+                        beijing_tz = pytz.timezone("Asia/Shanghai")
+                        dt_beijing = dt.astimezone(beijing_tz)
+                        # 格式化为 RFC 2822 格式
+                        date_beijing = dt_beijing.strftime("%a, %d %b %Y %H:%M:%S %z")
+                except Exception:
+                    pass
+            
             body = _extract_mail_body_plain(msg)
 
             result.append(
@@ -366,7 +382,7 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
                     "id": uid.decode(errors="ignore") if isinstance(uid, (bytes, bytearray)) else str(uid),
                     "from": from_addr,
                     "subject": subject,
-                    "date": date_header,
+                    "date": date_beijing if date_beijing else date_header,
                     "date_iso": date_iso,
                     "body": body,
                 }
