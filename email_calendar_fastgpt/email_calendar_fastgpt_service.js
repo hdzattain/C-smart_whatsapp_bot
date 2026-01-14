@@ -8,11 +8,14 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const Lark = require('@larksuiteoapi/node-sdk');
 const FastGPTClient = require('../email_calendar_fastgpt/fastgpt_client');
 
 // ========== 配置 ==========
 const FASTGPT_URL = process.env.FASTGPT_URL || '';
 const FASTGPT_API_KEY = process.env.FASTGPT_API_KEY || '';
+const FEISHU_APP_ID = process.env.FEISHU_APP_ID || process.env.LARK_APP_ID || '';
+const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || process.env.LARK_APP_SECRET || '';
 
 // 加载用户配置
 const USERS_CONFIG_PATH = path.join(__dirname, 'users_config.json');
@@ -289,6 +292,166 @@ function startScheduledTasks() {
   console.log('[服务] 所有定时任务已启动');
 }
 
+// ========== 飞书 card.action.trigger 处理函数，可复用 ==========
+async function handleFeishuCardActionTrigger(data) {
+  console.log('[飞书回调] 收到 card.action.trigger:', JSON.stringify(data, null, 2));
+
+  try {
+    // 兼容两种结构：
+    // 1) 文档中的 behaviors[ { type: 'callback', value: {...} } ]
+    // 2) 实际 WS 返回的 data.action.value
+    let payload = null;
+
+    if (Array.isArray(data.behaviors)) {
+      const behaviors = data.behaviors;
+      const firstCallback = behaviors.find(
+        (b) => b && b.type === 'callback' && b.value && typeof b.value === 'object'
+      );
+      if (firstCallback) {
+        payload = firstCallback.value;
+      }
+    }
+
+    if (!payload && data.action && data.action.value && typeof data.action.value === 'object') {
+      payload = data.action.value;
+    }
+
+    if (!payload) {
+      console.warn('[飞书回调] 未找到有效的 callback/action.value，忽略本次回调');
+      return {
+        toast: {
+          type: 'warning',
+          content: '未找到有效的卡片参数',
+          i18n: {
+            zh_cn: '未找到有效的卡片参数',
+            en_us: 'no valid card payload'
+          }
+        }
+      };
+    }
+
+    const { force_add_schedule_json_body, email_account } = payload || {};
+
+    if (!email_account) {
+      console.warn('[飞书回调] 缺少 email_account，无法匹配用户');
+      return {
+        toast: {
+          type: 'warning',
+          content: '缺少邮箱账号，无法处理',
+          i18n: {
+            zh_cn: '缺少邮箱账号，无法处理',
+            en_us: 'missing email_account'
+          }
+        }
+      };
+    }
+
+    const user = USERS.find((u) => u && u.email_account === email_account);
+    if (!user || !user.user_refresh_token) {
+      console.warn('[飞书回调] 未在 users_config.json 找到对应用户或其 refresh_token:', email_account);
+      return {
+        toast: {
+          type: 'warning',
+          content: '未找到对应用户或其 refresh_token',
+          i18n: {
+            zh_cn: '未找到对应用户或其 refresh_token',
+            en_us: 'user or refresh_token not found'
+          }
+        }
+      };
+    }
+
+    // 为保证 3 秒内返回，这里异步调用 FastGPT，不阻塞 toast 返回
+    (async () => {
+      try {
+        const randomChatId = generateRandomChatId();
+        const client = createClient(randomChatId);
+
+        const variables = {
+          force_add_schedule_json_body,
+          user_refresh_token: user.user_refresh_token
+        };
+
+        console.log('[飞书回调] 异步调用 FastGPT 强制添加日程, email_account:', email_account);
+
+        const result = await client.sendToFastGPT({
+          query: '强制添加日程',
+          user: email_account,
+          variables
+        });
+
+        console.log('[飞书回调] FastGPT 调用成功，结果前 100 字符:', typeof result === 'string' ? result.substring(0, 100) : '');
+
+        // 尝试从返回中提取新的 refresh_token
+        try {
+          const newToken = extractLastRefreshTokenFromText(result);
+          if (newToken && newToken !== user.user_refresh_token) {
+            await updateUsersConfigRefreshToken(email_account, newToken);
+          }
+        } catch (err) {
+          console.error('[飞书回调] 尝试更新 user_refresh_token 失败:', err.message);
+        }
+      } catch (err) {
+        console.error('[飞书回调] 异步调用 FastGPT 失败:', err && err.message ? err.message : err);
+      }
+    })();
+
+    // 立即返回 toast，避免超过 3 秒超时
+    return {
+      toast: {
+        type: 'success',
+        content: '已接收请求，正在添加日程',
+        i18n: {
+          zh_cn: '已接收请求，正在添加日程',
+          en_us: 'request received, adding schedule'
+        }
+      }
+    };
+  } catch (err) {
+    console.error('[飞书回调] 处理 card.action.trigger 失败:', err && err.message ? err.message : err);
+    return {
+      toast: {
+        type: 'error',
+        content: '处理失败，请稍后重试',
+        i18n: {
+          zh_cn: '处理失败，请稍后重试',
+          en_us: 'process failed, please try again later'
+        }
+      }
+    };
+  }
+}
+
+// ========== 建立飞书长连接处理回调 ==========
+let wsClientStarted = false;
+
+function startFeishuWsClient() {
+  if (wsClientStarted) return;
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
+    console.warn('[飞书] 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，跳过长连接回调处理');
+    return;
+  }
+
+  const wsClient = new Lark.WSClient({
+    appId: FEISHU_APP_ID,
+    appSecret: FEISHU_APP_SECRET
+  });
+
+  const eventDispatcher = new Lark.EventDispatcher({}).register({
+    'card.action.trigger': handleFeishuCardActionTrigger
+  });
+
+  wsClient
+    .start({ eventDispatcher })
+    .then(() => {
+      wsClientStarted = true;
+      console.log('[飞书] WS 长连接已建立，开始接收回调事件');
+    })
+    .catch((err) => {
+      console.error('[飞书] 启动 WS 长连接失败:', err && err.message ? err.message : err);
+    });
+}
+
 // ========== 手动执行任务（用于测试） ==========
 async function runTaskManually(taskName) {
   const task = TASKS.find(t => t.name === taskName);
@@ -309,16 +472,34 @@ if (require.main === module) {
     console.log(`[配置] 用户列表: ${USERS.map(u => u.email_account).join(', ')}`);
   }
   
-  // 启动定时任务
-  startScheduledTasks();
-  
   // 处理命令行参数
   const args = process.argv.slice(2);
+  
+  // 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>
   if (args[0] === 'run' && args[1]) {
-    // 手动执行任务: node fastgpt_service.js run <任务名>
-    runTaskManually(args[1]).then(() => {
-      console.log('[服务] 手动任务执行完成');
+    console.log('[服务] 以 run 模式启动，立即建立飞书长连接...');
+    // 先启动飞书长连接，防止回调过早到达
+    startFeishuWsClient();
+
+    // 保持进程运行，等待回调
+    console.log('[提示] 长连接已启动，稍后将执行一次手动任务');
+    console.log('[提示] 现在就可以在飞书里点击卡片，回调会在这里显示');
+    console.log('[提示] 使用 Ctrl+C 停止服务');
+
+    // 优雅退出
+    process.on('SIGINT', () => {
+      console.log('\n[服务] 收到退出信号，正在关闭...');
       process.exit(0);
+    });
+    
+    process.on('SIGTERM', () => {
+      console.log('\n[服务] 收到终止信号，正在关闭...');
+      process.exit(0);
+    });
+
+    // 再执行一次指定任务（不会影响长连接）
+    runTaskManually(args[1]).then(() => {
+      console.log('[服务] 手动任务执行完成（长连接仍在运行，等待飞书回调）');
     }).catch(err => {
       console.error('[ERR] 手动任务执行失败:', err);
       process.exit(1);
@@ -326,6 +507,11 @@ if (require.main === module) {
     return;
   }
   
+  // 启动定时任务
+  startScheduledTasks();
+
+  // 启动飞书长连接回调处理
+  startFeishuWsClient();
   // 保持进程运行
   console.log('[服务] 服务已启动，等待定时任务执行...');
   console.log('[提示] 使用 Ctrl+C 停止服务');
