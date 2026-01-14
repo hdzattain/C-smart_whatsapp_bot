@@ -34,22 +34,73 @@ try {
 
 // 定时任务配置（cron 表达式）
 // 格式：分钟 小时 日 月 星期
-// 例如：'0 18 * * *' 表示每天 18:00
-const TASK_SCHEDULE = process.env.FASTGPT_CRON || '45 11 * * *';
+// 例如：'0 * * * *' 表示每小时的第0分钟执行
 const TASK_TIMEZONE = process.env.FASTGPT_TIMEZONE || 'Asia/Hong_Kong';
-const TASK_QUERY = process.env.FASTGPT_QUERY || '定时自动加日程';
+
+// 任务类型配置
+const TASK_TYPES = [
+  {
+    name: '定时自动加日程',
+    // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
+    schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
+    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  },
+  {
+    name: '定时自动加日程',
+    // 11:50和17:50执行（确保在12点和18点之前完成加日程）
+    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
+    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  },
+  {
+    name: '定时自动总结',
+    schedule: process.env.FASTGPT_CRON_SUMMARY || '0 12,18 * * *', // 12点和18点执行
+    query: process.env.FASTGPT_QUERY_SUMMARY || '定时自动总结'
+  }
+];
 
 // 为每个用户创建任务
-const TASKS = USERS.map(user => ({
-  name: `每日任务-${user.email_account}`,
-  schedule: TASK_SCHEDULE,
-  timezone: TASK_TIMEZONE,
-  query: TASK_QUERY,
-  user: user.email_account,
-  email_account: user.email_account,
-  user_access_token: user.user_access_token,
-  user_refresh_token: user.user_refresh_token
-}));
+// 加日程任务1：8-11点、13-17点、19-22点每小时执行
+// 加日程任务2：11:50和17:50执行
+// 总结任务：12点和18点执行（会先执行加日程再执行总结）
+const TASKS = USERS.flatMap(user => {
+  const scheduleTask1 = {
+    name: `定时自动加日程-${user.email_account}`,
+    schedule: TASK_TYPES[0].schedule,
+    timezone: TASK_TIMEZONE,
+    query: TASK_TYPES[0].query,
+    user: user.email_account,
+    email_account: user.email_account,
+    user_access_token: user.user_access_token,
+    user_refresh_token: user.user_refresh_token,
+    taskType: 'schedule'
+  };
+  
+  const scheduleTask2 = {
+    name: `定时自动加日程(提前)-${user.email_account}`,
+    schedule: TASK_TYPES[1].schedule,
+    timezone: TASK_TIMEZONE,
+    query: TASK_TYPES[1].query,
+    user: user.email_account,
+    email_account: user.email_account,
+    user_access_token: user.user_access_token,
+    user_refresh_token: user.user_refresh_token,
+    taskType: 'schedule'
+  };
+  
+  const summaryTask = {
+    name: `定时自动总结-${user.email_account}`,
+    schedule: TASK_TYPES[2].schedule,
+    timezone: TASK_TIMEZONE,
+    query: TASK_TYPES[2].query,
+    user: user.email_account,
+    email_account: user.email_account,
+    user_access_token: user.user_access_token,
+    user_refresh_token: user.user_refresh_token,
+    taskType: 'summary'
+  };
+  
+  return [scheduleTask1, scheduleTask2, summaryTask];
+});
 
 // ========== 初始化客户端（每个任务使用自己的客户端） ==========
 if (!FASTGPT_URL || !FASTGPT_API_KEY) {
