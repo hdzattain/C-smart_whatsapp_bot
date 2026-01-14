@@ -137,6 +137,32 @@ async function updateUsersConfigRefreshToken(emailAccount, newRefreshToken) {
   return USERS_CONFIG_WRITE_QUEUE;
 }
 
+// 每次从 users_config.json 读取最新配置，确保拿到最新的 refresh_token
+async function getUserFromConfig(emailAccount) {
+  if (!emailAccount) return null;
+  try {
+    const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
+    const usersOnDisk = JSON.parse(raw);
+    if (!Array.isArray(usersOnDisk)) {
+      console.warn('[配置] users_config.json 格式异常（不是数组）');
+      return null;
+    }
+    const user = usersOnDisk.find(u => u && u.email_account === emailAccount);
+    if (!user) {
+      console.warn('[配置] users_config.json 未找到用户:', emailAccount);
+      return null;
+    }
+    // 同步内存中的 USERS/TASKS，方便后续使用
+    if (user.user_refresh_token) {
+      updateInMemoryRefreshToken(emailAccount, user.user_refresh_token);
+    }
+    return user;
+  } catch (err) {
+    console.error('[配置] 读取 users_config.json 失败（getUserFromConfig）:', err.message);
+    return null;
+  }
+}
+
 // 定时任务配置（cron 表达式）
 // 格式：分钟 小时 日 月 星期
 // 例如：'0 * * * *' 表示每小时的第0分钟执行
@@ -346,9 +372,10 @@ async function handleFeishuCardActionTrigger(data) {
       };
     }
 
-    const user = USERS.find((u) => u && u.email_account === email_account);
+    // 每次回调都从 users_config.json 读取最新 user_refresh_token
+    const user = await getUserFromConfig(email_account);
     if (!user || !user.user_refresh_token) {
-      console.warn('[飞书回调] 未在 users_config.json 找到对应用户或其 refresh_token:', email_account);
+      console.warn('[飞书回调] 未在最新 users_config.json 找到对应用户或其 refresh_token:', email_account);
       return {
         toast: {
           type: 'warning',
