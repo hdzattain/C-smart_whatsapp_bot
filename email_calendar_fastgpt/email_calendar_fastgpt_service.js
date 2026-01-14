@@ -17,6 +17,7 @@ const FASTGPT_API_KEY = process.env.FASTGPT_API_KEY || '';
 // 加载用户配置
 const USERS_CONFIG_PATH = path.join(__dirname, 'users_config.json');
 let USERS = [];
+let USERS_CONFIG_WRITE_QUEUE = Promise.resolve();
 
 try {
   if (fs.existsSync(USERS_CONFIG_PATH)) {
@@ -30,6 +31,107 @@ try {
 } catch (err) {
   console.error(`[ERR] 加载用户配置失败:`, err.message);
   process.exit(1);
+}
+
+function extractLastRefreshTokenFromText(text) {
+  if (typeof text !== 'string') return '';
+  let lastToken = '';
+
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const candidate = text.slice(start, i + 1);
+        start = -1;
+        try {
+          const obj = JSON.parse(candidate);
+          const token = obj && typeof obj.user_refresh_token === 'string' ? obj.user_refresh_token.trim() : '';
+          if (token) lastToken = token;
+        } catch (_) {
+          // ignore invalid json fragments
+        }
+      }
+    }
+  }
+
+  return lastToken;
+}
+
+function updateInMemoryRefreshToken(emailAccount, newRefreshToken) {
+  if (!emailAccount || !newRefreshToken) return;
+  USERS = USERS.map(u =>
+    u.email_account === emailAccount ? { ...u, user_refresh_token: newRefreshToken } : u
+  );
+  // 同步任务内存，确保后续定时执行用新 token
+  TASKS.forEach(t => {
+    if (t.email_account === emailAccount) t.user_refresh_token = newRefreshToken;
+  });
+}
+
+async function updateUsersConfigRefreshToken(emailAccount, newRefreshToken) {
+  USERS_CONFIG_WRITE_QUEUE = USERS_CONFIG_WRITE_QUEUE.then(async () => {
+    if (!emailAccount || !newRefreshToken) return;
+
+    let usersOnDisk = [];
+    try {
+      const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
+      usersOnDisk = JSON.parse(raw);
+      if (!Array.isArray(usersOnDisk)) usersOnDisk = [];
+    } catch (err) {
+      console.error('[ERR] 读取/解析 users_config.json 失败:', err.message);
+      return;
+    }
+
+    const idx = usersOnDisk.findIndex(u => u && u.email_account === emailAccount);
+    if (idx === -1) {
+      console.warn(`[警告] users_config.json 未找到邮箱 ${emailAccount}，跳过刷新 token 更新`);
+      return;
+    }
+
+    usersOnDisk[idx] = { ...usersOnDisk[idx], user_refresh_token: newRefreshToken };
+    try {
+      fs.writeFileSync(USERS_CONFIG_PATH, JSON.stringify(usersOnDisk, null, 2) + '\n', 'utf8');
+      updateInMemoryRefreshToken(emailAccount, newRefreshToken);
+      console.log(`[配置] 已更新 ${emailAccount} 的 user_refresh_token 到 users_config.json`);
+    } catch (err) {
+      console.error('[ERR] 写入 users_config.json 失败:', err.message);
+    }
+  });
+
+  return USERS_CONFIG_WRITE_QUEUE;
 }
 
 // 定时任务配置（cron 表达式）
@@ -70,7 +172,6 @@ const TASKS = USERS.flatMap(user => {
     query: TASK_TYPES[0].query,
     user: user.email_account,
     email_account: user.email_account,
-    user_access_token: user.user_access_token,
     user_refresh_token: user.user_refresh_token,
     taskType: 'schedule'
   };
@@ -82,7 +183,6 @@ const TASKS = USERS.flatMap(user => {
     query: TASK_TYPES[1].query,
     user: user.email_account,
     email_account: user.email_account,
-    user_access_token: user.user_access_token,
     user_refresh_token: user.user_refresh_token,
     taskType: 'schedule'
   };
@@ -94,7 +194,6 @@ const TASKS = USERS.flatMap(user => {
     query: TASK_TYPES[2].query,
     user: user.email_account,
     email_account: user.email_account,
-    user_access_token: user.user_access_token,
     user_refresh_token: user.user_refresh_token,
     taskType: 'summary'
   };
@@ -146,7 +245,6 @@ async function executeTask(task) {
     // 构建 variables
     const variables = {
       email_account: task.email_account,
-      user_access_token: task.user_access_token,
       user_refresh_token: task.user_refresh_token
     };
     
@@ -155,6 +253,16 @@ async function executeTask(task) {
       user: task.user,
       variables: variables
     });
+
+    // 如果返回内容包含新的 refresh_token（即使前后还有其它输出），则写回 users_config.json
+    try {
+      const newToken = extractLastRefreshTokenFromText(result);
+      if (newToken) {
+        await updateUsersConfigRefreshToken(task.email_account, newToken);
+      }
+    } catch (err) {
+      console.error('[ERR] 尝试更新 user_refresh_token 失败:', err.message);
+    }
     
     console.log(`[定时任务] ${task.name} 执行成功，结果: ${result.substring(0, 100)}...`);
     return result;
