@@ -7,7 +7,8 @@ require('dotenv').config();
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
-const FastGPTClient = require('../insp-bot/fastgpt_client');
+const crypto = require('crypto');
+const FastGPTClient = require('../email_calendar_fastgpt/fastgpt_client');
 
 // ========== 配置 ==========
 const FASTGPT_URL = process.env.FASTGPT_URL || '';
@@ -34,7 +35,7 @@ try {
 // 定时任务配置（cron 表达式）
 // 格式：分钟 小时 日 月 星期
 // 例如：'0 18 * * *' 表示每天 18:00
-const TASK_SCHEDULE = process.env.FASTGPT_CRON || '44 10 * * *';
+const TASK_SCHEDULE = process.env.FASTGPT_CRON || '45 11 * * *';
 const TASK_TIMEZONE = process.env.FASTGPT_TIMEZONE || 'Asia/Hong_Kong';
 const TASK_QUERY = process.env.FASTGPT_QUERY || '定时自动加日程';
 
@@ -61,6 +62,11 @@ if (TASKS.length === 0) {
   process.exit(1);
 }
 
+// 生成随机 chatId
+function generateRandomChatId() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
 // 创建客户端工厂函数
 function createClient(chatId) {
   return new FastGPTClient({
@@ -79,8 +85,12 @@ async function executeTask(task) {
   try {
     console.log(`[定时任务] 开始执行: ${task.name} (用户: ${task.email_account})`);
     
-    // 为每个任务创建独立的客户端（使用用户的 email_account 作为 chatId）
-    const client = createClient(task.email_account);
+    // 每次执行时生成随机 chatId
+    const randomChatId = generateRandomChatId();
+    console.log(`[定时任务] 使用随机 chatId: ${randomChatId}`);
+    
+    // 为每个任务创建独立的客户端（使用随机 chatId）
+    const client = createClient(randomChatId);
     
     // 构建 variables
     const variables = {
