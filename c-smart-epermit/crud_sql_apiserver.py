@@ -93,29 +93,36 @@ EMAIL_ACCOUNT_FIELDS = [
     "updated_at",
 ]
 
+# --- 每日邮件处理记录表配置（handle_ids） ---
+EMAIL_EVERYDAY_TABLE = "email_everyday"
+EMAIL_EVERYDAY_FIELDS = [
+    "id",
+    "email_account",
+    "email_id",
+    "received_time",
+    "created_at",
+]
+
 # --- 加密密钥配置 ---
-# 从 .env 文件读取 EMAIL_ENCRYPTION_KEY，如果没有则生成默认密钥（生产环境请务必在 .env 中设置）
+# 从 .env 文件读取 EMAIL_ENCRYPTION_KEY，必须设置
 ENCRYPTION_KEY_RAW = os.getenv("EMAIL_ENCRYPTION_KEY")
 if not ENCRYPTION_KEY_RAW:
-    # 默认密钥（仅用于开发，生产环境必须在 .env 文件中设置 EMAIL_ENCRYPTION_KEY）
-    # 生成一个固定的密钥用于开发环境
-    default_key_material = b"default_key_for_dev_only_change_in_production_32bytes!!"
-    _fernet_key = base64.urlsafe_b64encode(default_key_material[:32])
-else:
-    # 如果 .env 文件提供了密钥
-    try:
-        # 尝试作为 base64 字符串直接使用
-        _fernet_key = ENCRYPTION_KEY_RAW.encode()
-        # 验证格式
-        base64.urlsafe_b64decode(_fernet_key)
-    except Exception:
-        # 如果不是有效的 base64，将原始字符串转换为密钥
-        key_material = ENCRYPTION_KEY_RAW.encode()
-        if len(key_material) < 32:
-            key_material = key_material.ljust(32, b"0")
-        elif len(key_material) > 32:
-            key_material = key_material[:32]
-        _fernet_key = base64.urlsafe_b64encode(key_material)
+    raise RuntimeError("EMAIL_ENCRYPTION_KEY 未设置，请在 .env 文件中配置")
+
+# 处理密钥
+try:
+    # 尝试作为 base64 字符串直接使用
+    _fernet_key = ENCRYPTION_KEY_RAW.encode()
+    # 验证格式
+    base64.urlsafe_b64decode(_fernet_key)
+except Exception:
+    # 如果不是有效的 base64，将原始字符串转换为密钥
+    key_material = ENCRYPTION_KEY_RAW.encode()
+    if len(key_material) < 32:
+        key_material = key_material.ljust(32, b"0")
+    elif len(key_material) > 32:
+        key_material = key_material[:32]
+    _fernet_key = base64.urlsafe_b64encode(key_material)
 
 # 初始化加密器
 try:
@@ -598,6 +605,56 @@ def mark_emails_unread_imap(
                 pass
 
 
+def add_read_ids(email_account, email_uids):
+    """
+    将邮件 UID 添加到 email_everyday 表（不进行 IMAP 操作，只更新数据库）
+    - email_account: 邮箱账号
+    - email_uids: 邮件 UID 列表（字符串、整数或列表）
+    """
+    import pytz
+    from datetime import datetime
+    
+    # 处理 UID 列表
+    if isinstance(email_uids, str):
+        uid_list = [uid.strip() for uid in email_uids.split(",")]
+    elif isinstance(email_uids, list):
+        uid_list = [str(uid) for uid in email_uids]
+    else:
+        uid_list = [str(email_uids)]
+    
+    # 获取当前时间（北京时间）
+    beijing_tz = pytz.timezone("Asia/Shanghai")
+    current_time = datetime.now(beijing_tz)
+    
+    # 插入到 email_everyday 表
+    try:
+        conn = get_conn()
+        added_count = 0
+        try:
+            with conn.cursor() as cur:
+                for uid in uid_list:
+                    try:
+                        # 使用 INSERT IGNORE 避免重复插入
+                        sql = f"""
+                            INSERT IGNORE INTO `{EMAIL_EVERYDAY_TABLE}` 
+                            (`email_account`, `email_id`, `received_time`) 
+                            VALUES (%s, %s, %s)
+                        """
+                        cur.execute(sql, (email_account, uid, current_time))
+                        if cur.rowcount > 0:
+                            added_count += 1
+                    except Exception as e:
+                        # 单个 UID 失败不影响其他
+                        continue
+                conn.commit()
+        finally:
+            conn.close()
+        
+        return {"ok": True, "added_count": added_count, "added_uids": uid_list}
+    except Exception as e:
+        raise RuntimeError(f"添加 handle_ids 失败: {str(e)}") from e
+
+
 # --- Routes ---
 @app.route('/')
 def index():
@@ -966,6 +1023,72 @@ def mail_mark_unread_from_db():
         })
     except Exception as e:
         return _json_error("标记邮件为未读失败", 502, code="mail_mark_unread_failed", detail=str(e))
+
+
+@app.route("/mail/mark_read", methods=["POST"])
+def mail_mark_read():
+    """
+    从数据库读取邮箱账号并将邮件 UID 添加到 email_everyday 表（不进行 IMAP 操作）
+    - email_account 必填：只处理该邮箱
+    - email_uids: 邮件 UID（字符串、整数或列表），多个用逗号分隔（必填）
+    """
+    # 隐私要求：不允许使用 URL query 传任何参数
+    if request.args:
+        return _json_error("隐私要求：/mail/mark_read 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = _require_str(data, "email_account")
+        email_uids = data.get("email_uids") or data.get("uid") or data.get("uids")
+        if not email_uids:
+            raise ValueError("缺少参数: email_uids")
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    try:
+        # 从数据库读取邮箱账号列表
+        sql = f"SELECT `email_account` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+        accounts = execute_query(sql, (email_account,), fetch=True)
+        
+        if not accounts:
+            return _json_error("未找到邮箱账号", 404, code="no_email_accounts")
+        
+        # 处理每个邮箱账号
+        all_results = []
+        errors = []
+        
+        for account_row in accounts:
+            acc = account_row.get("email_account")
+            
+            if not acc:
+                errors.append({"email_account": acc, "error": "账号为空"})
+                continue
+            
+            try:
+                res = add_read_ids(acc, email_uids)
+                all_results.append({
+                    "email_account": acc,
+                    **res
+                })
+            except Exception as e:
+                errors.append({
+                    "email_account": acc,
+                    "error": str(e)
+                })
+        
+        return jsonify({
+            "ok": True,
+            "results": all_results,
+            "errors": errors,
+            "total_accounts": len(accounts),
+            "success_count": len(all_results),
+            "error_count": len(errors)
+        })
+    except Exception as e:
+        return _json_error("添加 handle_ids 失败", 502, code="mail_mark_read_failed", detail=str(e))
 
 
 @app.route("/records", methods=["POST"])
@@ -2111,6 +2234,111 @@ def delete_email_account(record_id):
     if deleted == 0:
         return jsonify({"error": "未找到该记录"}), 404
     return jsonify({"status": "ok", "deleted_id": record_id})
+
+
+# ==========================
+# email_everyday 表：查询接口
+# ==========================
+
+@app.route("/email_everyday", methods=["GET"])
+def list_email_everyday():
+    """
+    查询 email_everyday 表（已处理的邮件记录）
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 支持按 email_account, email_id, received_time 等字段过滤
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in EMAIL_EVERYDAY_FIELDS:
+            if k == "received_time" and v:
+                # 支持传 YYYY-MM-DD，按一天范围查
+                try:
+                    dt = datetime.strptime(v[:10], "%Y-%m-%d")
+                    start = dt.strftime("%Y-%m-%d 00:00:00")
+                    end = dt.strftime("%Y-%m-%d 23:59:59")
+                    conditions.append("`received_time` BETWEEN %s AND %s")
+                    params.extend([start, end])
+                    continue
+                except Exception:
+                    # 解析失败则按等值匹配
+                    pass
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{EMAIL_EVERYDAY_TABLE}` {where} ORDER BY `received_time` DESC, `id` DESC"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
+
+@app.route("/email_everyday/check", methods=["POST"])
+def check_email_handled():
+    """
+    检查邮件是否已被处理
+    - email_account: 邮箱账号（必填）
+    - email_ids: 邮件 UID 列表（字符串、整数或列表），多个用逗号分隔（必填）
+    - 返回每个邮件 ID 的处理状态
+    """
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    try:
+        email_account = _require_str(data, "email_account")
+        email_ids = data.get("email_ids") or data.get("email_uids") or data.get("uid") or data.get("uids")
+        if not email_ids:
+            raise ValueError("缺少参数: email_ids")
+    except ValueError as e:
+        return _json_error(str(e), 400)
+
+    # 处理 UID 列表
+    if isinstance(email_ids, str):
+        uid_list = [uid.strip() for uid in email_ids.split(",")]
+    elif isinstance(email_ids, list):
+        uid_list = [str(uid) for uid in email_ids]
+    else:
+        uid_list = [str(email_ids)]
+
+    try:
+        # 查询这些邮件 ID 是否已处理
+        placeholders = ", ".join(["%s"] * len(uid_list))
+        sql = f"""
+            SELECT `email_id`, `received_time` 
+            FROM `{EMAIL_EVERYDAY_TABLE}` 
+            WHERE `email_account`=%s AND `email_id` IN ({placeholders})
+        """
+        params = [email_account] + uid_list
+        rows = execute_query(sql, tuple(params), fetch=True)
+        
+        # 构建已处理的邮件 ID 集合
+        handled_set = {row["email_id"] for row in rows}
+        
+        # 构建返回结果
+        result = []
+        for uid in uid_list:
+            result.append({
+                "email_id": uid,
+                "handled": uid in handled_set,
+                "received_time": next((r["received_time"] for r in rows if r["email_id"] == uid), None)
+            })
+        
+        return jsonify({
+            "ok": True,
+            "email_account": email_account,
+            "results": result,
+            "handled_count": len(handled_set),
+            "total_count": len(uid_list)
+        })
+    except Exception as e:
+        return _json_error("查询失败", 500, code="check_failed", detail=str(e))
 
 
 
