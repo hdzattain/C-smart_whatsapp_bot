@@ -2078,17 +2078,12 @@ def list_email_accounts():
     sql = f"SELECT * FROM `{EMAIL_ACCOUNT_TABLE}` {where} ORDER BY `id`"
     rows = execute_query(sql, tuple(params), fetch=True)
 
-    # 解密密码字段
+    # 不返回密码字段（包括加密和明文的）
     for row in rows:
-        if row.get("encrypted_password"):
-            try:
-                row["password"] = decrypt_password(row["encrypted_password"])
-            except Exception as e:
-                row["password"] = None
-                row["decrypt_error"] = str(e)
-        # 不返回加密后的密码字段
         if "encrypted_password" in row:
             del row["encrypted_password"]
+        if "password" in row:
+            del row["password"]
 
     return jsonify(rows)
 
@@ -2120,12 +2115,13 @@ def create_email_account():
 
 
 def _insert_one_email_account(data: dict):
-    """插入一条邮箱账号记录"""
+    """插入一条邮箱账号记录，如果已存在则更新密码"""
     if not isinstance(data, dict):
         return {"error": "每条记录必须是 JSON 对象"}
 
     # 校验必填字段
-    if not data.get("email_account"):
+    email_account = data.get("email_account")
+    if not email_account:
         return {"error": "缺少必填字段: email_account"}
 
     # 处理密码：明文输入，加密存储
@@ -2138,31 +2134,58 @@ def _insert_one_email_account(data: dict):
     except Exception as e:
         return {"error": f"密码加密失败: {str(e)}"}
 
-    # 构造记录
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    record = {
-        "email_account": data.get("email_account"),
-        "encrypted_password": encrypted_password,
-        "description": data.get("description", ""),
-        "created_at": data.get("created_at") or now_str,
-        "updated_at": data.get("updated_at") or now_str,
-    }
+    # 检查是否已存在
+    check_sql = f"SELECT `id` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+    existing = execute_query(check_sql, (email_account,), fetch=True)
+    
+    if existing:
+        # 已存在，更新密码
+        record_id = existing[0]["id"]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        updates = {
+            "encrypted_password": encrypted_password,
+            "updated_at": now_str,
+        }
+        
+        # 如果提供了 description，也更新
+        if "description" in data:
+            updates["description"] = data.get("description", "")
+        
+        update_fields = [f"`{k}`=%s" for k in updates.keys()]
+        sql = f"UPDATE `{EMAIL_ACCOUNT_TABLE}` SET {', '.join(update_fields)} WHERE `id`=%s"
+        params = tuple(updates.values()) + (record_id,)
+        
+        try:
+            affected = execute_query(sql, params)
+            return {"status": "updated", "updated_id": record_id, "affected_rows": affected}
+        except Exception as e:
+            return {"error": "更新失败", "detail": str(e)}
+    else:
+        # 不存在，插入新记录
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        record = {
+            "email_account": email_account,
+            "encrypted_password": encrypted_password,
+            "description": data.get("description", ""),
+            "created_at": data.get("created_at") or now_str,
+            "updated_at": data.get("updated_at") or now_str,
+        }
 
-    # 如果提供了 id，也插入
-    if "id" in data:
-        record["id"] = data.get("id")
+        # 如果提供了 id，也插入
+        if "id" in data:
+            record["id"] = data.get("id")
 
-    # 构建 SQL
-    cols = [f"`{k}`" for k in record.keys()]
-    placeholders = ", ".join(["%s"] * len(cols))
-    cols_sql = ", ".join(cols)
-    sql = f"INSERT INTO `{EMAIL_ACCOUNT_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+        # 构建 SQL
+        cols = [f"`{k}`" for k in record.keys()]
+        placeholders = ", ".join(["%s"] * len(cols))
+        cols_sql = ", ".join(cols)
+        sql = f"INSERT INTO `{EMAIL_ACCOUNT_TABLE}` ({cols_sql}) VALUES ({placeholders})"
 
-    try:
-        affected = execute_query(sql, tuple(record.values()))
-        return {"status": "ok", "affected_rows": affected}
-    except Exception as e:
-        return {"error": "插入失败", "detail": str(e)}
+        try:
+            affected = execute_query(sql, tuple(record.values()))
+            return {"status": "created", "affected_rows": affected}
+        except Exception as e:
+            return {"error": "插入失败", "detail": str(e)}
 
 
 @app.route("/email_accounts/<int:record_id>", methods=["GET"])
