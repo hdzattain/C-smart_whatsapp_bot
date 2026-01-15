@@ -64,27 +64,22 @@ const TASK_TIMEZONE = process.env.FASTGPT_TIMEZONE || 'Asia/Hong_Kong';
 
 // 任务类型配置
 const TASK_TYPES = [
-  // {
-  //   name: '定时自动加日程',
-  //   // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
-  //   schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
-  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
-  // },
-  // {
-  //   name: '定时自动加日程',
-  //   // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
-  //   schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
-  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
-  // },
   {
     name: '定时自动加日程',
-    // 测试模式：每分钟执行一次
-    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '* * * * *',
+    // 加日程任务1：8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
+    schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
+    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  },
+  {
+    name: '定时自动加日程（提前10分钟）',
+    // 加日程任务2：11:50 和 17:50 执行
+    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
     query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
   },
   {
     name: '定时自动总结',
-    schedule: process.env.FASTGPT_CRON_SUMMARY || '0 12,18 * * *', // 12点和18点执行
+    // 总结任务：12点和18点执行
+    schedule: process.env.FASTGPT_CRON_SUMMARY || '0 12,18 * * *',
     query: process.env.FASTGPT_QUERY_SUMMARY || '定时自动总结'
   }
 ];
@@ -103,19 +98,28 @@ const TASKS = USERS.flatMap(user => {
     email_account: user.email_account,
     taskType: 'schedule'
   };
-  
-  const summaryTask = {
-    name: `定时自动总结-${user.email_account}`,
+
+  const scheduleTask2 = {
+    name: `定时自动加日程（提前10分钟）-${user.email_account}`,
     schedule: TASK_TYPES[1].schedule,
     timezone: TASK_TIMEZONE,
     query: TASK_TYPES[1].query,
     user: user.email_account,
     email_account: user.email_account,
+    taskType: 'schedule'
+  };
+  
+  const summaryTask = {
+    name: `定时自动总结-${user.email_account}`,
+    schedule: TASK_TYPES[2].schedule,
+    timezone: TASK_TIMEZONE,
+    query: TASK_TYPES[2].query,
+    user: user.email_account,
+    email_account: user.email_account,
     taskType: 'summary'
   };
   
-  // return [scheduleTask1, scheduleTask2, summaryTask];
-  return [scheduleTask1, summaryTask];
+  return [scheduleTask1, scheduleTask2, summaryTask];
 
 });
 
@@ -198,36 +202,16 @@ function startScheduledTasks() {
 
 // ========== 飞书 card.action.trigger 处理函数，可复用 ==========
 async function handleFeishuCardActionTrigger(data) {
-  // 立即打印，确保函数被调用时能立即看到
-  console.log('[飞书回调] ========== handleFeishuCardActionTrigger 被调用 ==========');
-  console.log('[飞书回调] 进程 PID:', process.pid);
-  console.log('[飞书回调] data 类型:', typeof data);
-  
-  // 确保即使 JSON.stringify 抛异常也不影响返回
-  try {
-    console.log('[飞书回调] 收到 card.action.trigger:', JSON.stringify(data, null, 2));
-  } catch (logErr) {
-    console.log('[飞书回调] 收到 card.action.trigger (无法序列化):', typeof data, data?.event_type || 'unknown');
-    console.log('[飞书回调] 序列化错误:', logErr && logErr.message ? logErr.message : logErr);
-  }
 
-  // 超时保护：确保 2.5 秒内一定返回（留 0.5 秒缓冲）
+  
+  // 超时保护：确保 3 秒内一定返回
+  const TIMEOUT_FLAG = '__TIMEOUT__';
+  let timeoutId;
+
   const timeoutPromise = new Promise((resolve) => {
-    setTimeout(() => {
-      console.warn('[飞书回调] 处理超时（2.5秒），强制返回 toast');
-      const timeoutResponse = {
-        toast: {
-          type: 'error',
-          content: '处理超时，请稍后重试',
-          i18n: {
-            zh_cn: '处理超时，请稍后重试',
-            en_us: 'process timeout, please try again later'
-          }
-        }
-      };
-      console.log('[飞书回调] 超时返回 toast 响应:', JSON.stringify(timeoutResponse));
-      resolve(timeoutResponse);
-    }, 2500);
+    timeoutId = setTimeout(() => {
+      resolve(TIMEOUT_FLAG);
+    }, 3000);
   });
 
   const handlerPromise = (async () => {
@@ -246,6 +230,7 @@ async function handleFeishuCardActionTrigger(data) {
         }
       };
     }
+
 
     // 兼容两种结构：
     // 1) 文档中的 behaviors[ { type: 'callback', value: {...} } ]
@@ -383,7 +368,7 @@ async function handleFeishuCardActionTrigger(data) {
     })();
 
     // 立即返回 toast，避免超过 3 秒超时
-    const toastResponse = {
+    return {
       toast: {
         type: 'success',
         content: '已接收请求，正在添加日程',
@@ -393,8 +378,6 @@ async function handleFeishuCardActionTrigger(data) {
         }
       }
     };
-    console.log('[飞书回调] 准备返回 toast 响应:', JSON.stringify(toastResponse));
-    return toastResponse;
     } catch (err) {
       // 最后的兜底 catch，确保任何未预料的异常都不会导致 handler 返回 undefined
       console.error('[飞书回调] 处理 card.action.trigger 失败（外层 catch）:', err && err.message ? err.message : err);
@@ -412,8 +395,28 @@ async function handleFeishuCardActionTrigger(data) {
     }
   })();
 
-  // 使用 Promise.race 确保 2.5 秒内一定返回
-  return Promise.race([handlerPromise, timeoutPromise]);
+  // 使用 Promise.race 确保 3 秒内一定返回
+  const result = await Promise.race([handlerPromise, timeoutPromise]);
+
+  if (result === TIMEOUT_FLAG) {
+    console.warn('[飞书回调] 处理超时（3秒），强制返回 toast');
+    return {
+      toast: {
+        type: 'error',
+        content: '处理超时，请稍后重试',
+        i18n: {
+          zh_cn: '处理超时，请稍后重试',
+          en_us: 'process timeout, please try again later'
+        }
+      }
+    };
+  }
+
+  // 正常在 3 秒内返回结果，清理定时器
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
+  return result;
 }
 
 // ========== 建立飞书长连接处理回调 ==========
@@ -431,18 +434,11 @@ function startFeishuWsClient() {
     appSecret: FEISHU_APP_SECRET
   });
 
-  console.log('[飞书回调] 正在注册回调');
-  console.log('[飞书回调] 当前进程 PID:', process.pid);
-  console.log('[飞书回调] handleFeishuCardActionTrigger 函数类型:', typeof handleFeishuCardActionTrigger);
-  
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     'card.action.trigger': (data) => {
-      console.log('[飞书回调] EventDispatcher 收到 card.action.trigger，准备调用 handler');
       return handleFeishuCardActionTrigger(data);
     }
   });
-  
-  console.log('[飞书回调] EventDispatcher 注册完成');
 
   wsClient
     .start({ eventDispatcher })
