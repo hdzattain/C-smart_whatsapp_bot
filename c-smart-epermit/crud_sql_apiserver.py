@@ -88,6 +88,7 @@ EMAIL_ACCOUNT_FIELDS = [
     "id",
     "email_account",
     "encrypted_password",
+    "user_refresh_token",
     "description",
     "created_at",
     "updated_at",
@@ -2234,6 +2235,84 @@ def delete_email_account(record_id):
     if deleted == 0:
         return jsonify({"error": "未找到该记录"}), 404
     return jsonify({"status": "ok", "deleted_id": record_id})
+
+
+@app.route("/email_accounts/update_refresh_token", methods=["POST"])
+def update_refresh_token():
+    """
+    更新邮箱账号的 user_refresh_token
+    - email_account: 邮箱账号（必填）
+    - user_refresh_token: 刷新令牌（必填）
+    """
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    try:
+        email_account = _require_str(data, "email_account")
+        user_refresh_token = _require_str(data, "user_refresh_token")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # 自动更新 updated_at
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 更新 user_refresh_token 和 updated_at
+    sql = f"UPDATE `{EMAIL_ACCOUNT_TABLE}` SET `user_refresh_token`=%s, `updated_at`=%s WHERE `email_account`=%s"
+    params = (user_refresh_token, updated_at, email_account)
+
+    try:
+        affected = execute_query(sql, params)
+        if affected == 0:
+            return jsonify({"error": "未找到该邮箱账号"}), 404
+        return jsonify({
+            "status": "ok",
+            "email_account": email_account,
+            "message": "刷新令牌更新成功"
+        })
+    except Exception as e:
+        return jsonify({"error": f"更新失败: {str(e)}"}), 500
+
+
+@app.route("/email_accounts/get_refresh_token", methods=["GET", "POST"])
+def get_refresh_token():
+    """
+    查询邮箱账号的 user_refresh_token
+    - email_account: 邮箱账号（必填）
+    - 支持 GET（通过 query 参数）和 POST（通过 JSON body）
+    """
+    # 支持 GET 和 POST 两种方式
+    if request.method == "GET":
+        email_account = request.args.get("email_account")
+    else:
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "body 必须是 JSON 对象"}), 400
+        email_account = data.get("email_account")
+
+    if not email_account or not str(email_account).strip():
+        return jsonify({"error": "缺少参数: email_account"}), 400
+
+    email_account = str(email_account).strip()
+
+    # 查询 user_refresh_token
+    sql = f"SELECT `email_account`, `user_refresh_token`, `updated_at` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+    params = (email_account,)
+
+    try:
+        rows = execute_query(sql, params, fetch=True)
+        if not rows:
+            return jsonify({"error": "未找到该邮箱账号"}), 404
+        
+        row = rows[0]
+        return jsonify({
+            "status": "ok",
+            "email_account": row.get("email_account"),
+            "user_refresh_token": row.get("user_refresh_token"),
+            "updated_at": row.get("updated_at")
+        })
+    except Exception as e:
+        return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
 
 # ==========================
