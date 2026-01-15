@@ -9,6 +9,7 @@ import threading
 from dotenv import load_dotenv
 import lark_oapi as lark
 from lark_oapi.api.contact.v3 import GetUserRequest
+from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 import requests
 
 # 确保 print 输出立即刷新到 journalctl
@@ -92,6 +93,47 @@ def get_user_email(user_id: str) -> str:
         import traceback
         log_print(f"[错误] 异常堆栈: {traceback.format_exc()}")
         return None
+
+# 发送消息给用户
+def send_message_to_user(user_id: str, message_text: str) -> bool:
+    """发送消息给指定用户"""
+    log_print(f"[日志] ========== 开始发送消息给用户 ==========")
+    log_print(f"[日志] 用户ID: {user_id}")
+    log_print(f"[日志] 消息内容: {message_text}")
+    try:
+        client = create_lark_client()
+        
+        # 构建消息内容 JSON 字符串
+        content_object = {"text": message_text}
+        content_string = json.dumps(content_object, ensure_ascii=False)
+        
+        log_print(f"[日志] 构建 CreateMessageRequest 请求...")
+        request = CreateMessageRequest.builder() \
+            .receive_id_type("user_id") \
+            .request_body(CreateMessageRequestBody.builder()
+                .receive_id(user_id)
+                .msg_type("text")
+                .content(content_string)
+                .build()) \
+            .build()
+        
+        log_print(f"[日志] 调用 im.v1.message.create API...")
+        response = client.im.v1.message.create(request)
+        
+        log_print(f"[日志] API 调用完成，检查响应状态...")
+        if not response.success():
+            log_print(f"[错误] 发送消息失败: code={response.code}, msg={response.msg}")
+            log_print(f"[错误] 响应详情: {json.dumps(json.loads(response.raw.content), indent=2, ensure_ascii=False)}")
+            return False
+        
+        log_print(f"[成功] ========== 消息发送成功 ==========")
+        log_print(f"[成功] 消息ID: {response.data.message_id if response.data else 'N/A'}")
+        return True
+    except Exception as e:
+        log_print(f"[错误] 发送消息异常: {e}")
+        import traceback
+        log_print(f"[错误] 异常堆栈: {traceback.format_exc()}")
+        return False
 
 # 生成随机 chatId
 def generate_random_chat_id():
@@ -228,6 +270,10 @@ def do_p2_application_bot_menu_v6(data: lark.application.v6.P2ApplicationBotMenu
         return
     
     log_print(f"[处理] 用户ID: {user_id}")
+    
+    # 立即发送"正在查询中..."消息
+    log_print(f"[处理] 立即发送'正在查询中...'消息给用户")
+    send_message_to_user(user_id, "正在查询中...")
     
     # 在后台线程中处理，避免阻塞事件处理
     def process_menu_event():
