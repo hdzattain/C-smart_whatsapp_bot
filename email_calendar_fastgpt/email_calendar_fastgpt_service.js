@@ -20,7 +20,6 @@ const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || process.env.LARK_APP_
 // 加载用户配置
 const USERS_CONFIG_PATH = path.join(__dirname, 'users_config.json');
 let USERS = [];
-let USERS_CONFIG_WRITE_QUEUE = Promise.resolve();
 
 try {
   if (fs.existsSync(USERS_CONFIG_PATH)) {
@@ -36,108 +35,7 @@ try {
   process.exit(1);
 }
 
-function extractLastRefreshTokenFromText(text) {
-  if (typeof text !== 'string') return '';
-  let lastToken = '';
-
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escape = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-
-    if (inString) {
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escape = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (ch === '{') {
-      if (depth === 0) start = i;
-      depth += 1;
-      continue;
-    }
-
-    if (ch === '}' && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        const candidate = text.slice(start, i + 1);
-        start = -1;
-        try {
-          const obj = JSON.parse(candidate);
-          const token = obj && typeof obj.user_refresh_token === 'string' ? obj.user_refresh_token.trim() : '';
-          if (token) lastToken = token;
-        } catch (_) {
-          // ignore invalid json fragments
-        }
-      }
-    }
-  }
-
-  return lastToken;
-}
-
-function updateInMemoryRefreshToken(emailAccount, newRefreshToken) {
-  if (!emailAccount || !newRefreshToken) return;
-  USERS = USERS.map(u =>
-    u.email_account === emailAccount ? { ...u, user_refresh_token: newRefreshToken } : u
-  );
-  // 同步任务内存，确保后续定时执行用新 token
-  TASKS.forEach(t => {
-    if (t.email_account === emailAccount) t.user_refresh_token = newRefreshToken;
-  });
-}
-
-async function updateUsersConfigRefreshToken(emailAccount, newRefreshToken) {
-  USERS_CONFIG_WRITE_QUEUE = USERS_CONFIG_WRITE_QUEUE.then(async () => {
-    if (!emailAccount || !newRefreshToken) return;
-
-    let usersOnDisk = [];
-    try {
-      const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-      usersOnDisk = JSON.parse(raw);
-      if (!Array.isArray(usersOnDisk)) usersOnDisk = [];
-    } catch (err) {
-      console.error('[ERR] 读取/解析 users_config.json 失败:', err.message);
-      return;
-    }
-
-    const idx = usersOnDisk.findIndex(u => u && u.email_account === emailAccount);
-    if (idx === -1) {
-      console.warn(`[警告] users_config.json 未找到邮箱 ${emailAccount}，跳过刷新 token 更新`);
-      return;
-    }
-
-    usersOnDisk[idx] = { ...usersOnDisk[idx], user_refresh_token: newRefreshToken };
-    try {
-      fs.writeFileSync(USERS_CONFIG_PATH, JSON.stringify(usersOnDisk, null, 2) + '\n', 'utf8');
-      updateInMemoryRefreshToken(emailAccount, newRefreshToken);
-      console.log(`[配置] 已更新 ${emailAccount} 的 user_refresh_token 到 users_config.json`);
-    } catch (err) {
-      console.error('[ERR] 写入 users_config.json 失败:', err.message);
-    }
-  });
-
-  return USERS_CONFIG_WRITE_QUEUE;
-}
-
-// 每次从 users_config.json 读取最新配置，确保拿到最新的 refresh_token
+// 从 users_config.json 读取用户配置
 async function getUserFromConfig(emailAccount) {
   if (!emailAccount) return null;
   try {
@@ -151,10 +49,6 @@ async function getUserFromConfig(emailAccount) {
     if (!user) {
       console.warn('[配置] users_config.json 未找到用户:', emailAccount);
       return null;
-    }
-    // 同步内存中的 USERS/TASKS，方便后续使用
-    if (user.user_refresh_token) {
-      updateInMemoryRefreshToken(emailAccount, user.user_refresh_token);
     }
     return user;
   } catch (err) {
@@ -170,16 +64,22 @@ const TASK_TIMEZONE = process.env.FASTGPT_TIMEZONE || 'Asia/Hong_Kong';
 
 // 任务类型配置
 const TASK_TYPES = [
+  // {
+  //   name: '定时自动加日程',
+  //   // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
+  //   schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
+  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  // },
+  // {
+  //   name: '定时自动加日程',
+  //   // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
+  //   schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
+  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  // },
   {
     name: '定时自动加日程',
-    // 8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
-    schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
-    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
-  },
-  {
-    name: '定时自动加日程',
-    // 11:50和17:50执行（确保在12点和18点之前完成加日程）
-    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
+    // 测试模式：每分钟执行一次
+    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '* * * * *',
     query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
   },
   {
@@ -201,33 +101,22 @@ const TASKS = USERS.flatMap(user => {
     query: TASK_TYPES[0].query,
     user: user.email_account,
     email_account: user.email_account,
-    user_refresh_token: user.user_refresh_token,
-    taskType: 'schedule'
-  };
-  
-  const scheduleTask2 = {
-    name: `定时自动加日程(提前)-${user.email_account}`,
-    schedule: TASK_TYPES[1].schedule,
-    timezone: TASK_TIMEZONE,
-    query: TASK_TYPES[1].query,
-    user: user.email_account,
-    email_account: user.email_account,
-    user_refresh_token: user.user_refresh_token,
     taskType: 'schedule'
   };
   
   const summaryTask = {
     name: `定时自动总结-${user.email_account}`,
-    schedule: TASK_TYPES[2].schedule,
+    schedule: TASK_TYPES[1].schedule,
     timezone: TASK_TIMEZONE,
-    query: TASK_TYPES[2].query,
+    query: TASK_TYPES[1].query,
     user: user.email_account,
     email_account: user.email_account,
-    user_refresh_token: user.user_refresh_token,
     taskType: 'summary'
   };
   
-  return [scheduleTask1, scheduleTask2, summaryTask];
+  // return [scheduleTask1, scheduleTask2, summaryTask];
+  return [scheduleTask1, summaryTask];
+
 });
 
 // ========== 初始化客户端（每个任务使用自己的客户端） ==========
@@ -273,8 +162,7 @@ async function executeTask(task) {
     
     // 构建 variables
     const variables = {
-      email_account: task.email_account,
-      user_refresh_token: task.user_refresh_token
+      email_account: task.email_account
     };
     
     const result = await client.sendToFastGPT({
@@ -282,16 +170,6 @@ async function executeTask(task) {
       user: task.user,
       variables: variables
     });
-
-    // 如果返回内容包含新的 refresh_token（即使前后还有其它输出），则写回 users_config.json
-    try {
-      const newToken = extractLastRefreshTokenFromText(result);
-      if (newToken) {
-        await updateUsersConfigRefreshToken(task.email_account, newToken);
-      }
-    } catch (err) {
-      console.error('[ERR] 尝试更新 user_refresh_token 失败:', err.message);
-    }
     
     console.log(`[定时任务] ${task.name} 执行成功，结果: ${result.substring(0, 100)}...`);
     return result;
@@ -447,7 +325,7 @@ async function handleFeishuCardActionTrigger(data) {
       };
     }
 
-    // 每次回调都从 users_config.json 读取最新 user_refresh_token
+    // 从 users_config.json 读取用户配置
     let user;
     try {
       user = await getUserFromConfig(email_account);
@@ -465,15 +343,15 @@ async function handleFeishuCardActionTrigger(data) {
       };
     }
 
-    if (!user || !user.user_refresh_token) {
-      console.warn('[飞书回调] 未在最新 users_config.json 找到对应用户或其 refresh_token:', email_account);
+    if (!user) {
+      console.warn('[飞书回调] 未在 users_config.json 找到对应用户:', email_account);
       return {
         toast: {
           type: 'warning',
-          content: '未找到对应用户或其 refresh_token',
+          content: '未找到对应用户',
           i18n: {
-            zh_cn: '未找到对应用户或其 refresh_token',
-            en_us: 'user or refresh_token not found'
+            zh_cn: '未找到对应用户',
+            en_us: 'user not found'
           }
         }
       };
@@ -487,7 +365,7 @@ async function handleFeishuCardActionTrigger(data) {
 
         const variables = {
           force_add_schedule_json_body,
-          user_refresh_token: user.user_refresh_token
+          email_account
         };
 
         console.log('[飞书回调] 异步调用 FastGPT 强制添加日程, email_account:', email_account);
@@ -499,16 +377,6 @@ async function handleFeishuCardActionTrigger(data) {
         });
 
         console.log('[飞书回调] FastGPT 调用成功，结果前 100 字符:', typeof result === 'string' ? result.substring(0, 100) : '');
-
-        // 尝试从返回中提取新的 refresh_token
-        try {
-          const newToken = extractLastRefreshTokenFromText(result);
-          if (newToken && newToken !== user.user_refresh_token) {
-            await updateUsersConfigRefreshToken(email_account, newToken);
-          }
-        } catch (err) {
-          console.error('[飞书回调] 尝试更新 user_refresh_token 失败:', err.message);
-        }
       } catch (err) {
         console.error('[飞书回调] 异步调用 FastGPT 失败:', err && err.message ? err.message : err);
       }
