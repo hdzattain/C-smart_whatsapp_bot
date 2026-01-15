@@ -320,26 +320,86 @@ function startScheduledTasks() {
 
 // ========== 飞书 card.action.trigger 处理函数，可复用 ==========
 async function handleFeishuCardActionTrigger(data) {
-  console.log('[飞书回调] 收到 card.action.trigger:', JSON.stringify(data, null, 2));
-
+  // 立即打印，确保函数被调用时能立即看到
+  console.log('[飞书回调] ========== handleFeishuCardActionTrigger 被调用 ==========');
+  console.log('[飞书回调] 进程 PID:', process.pid);
+  console.log('[飞书回调] data 类型:', typeof data);
+  
+  // 确保即使 JSON.stringify 抛异常也不影响返回
   try {
+    console.log('[飞书回调] 收到 card.action.trigger:', JSON.stringify(data, null, 2));
+  } catch (logErr) {
+    console.log('[飞书回调] 收到 card.action.trigger (无法序列化):', typeof data, data?.event_type || 'unknown');
+    console.log('[飞书回调] 序列化错误:', logErr && logErr.message ? logErr.message : logErr);
+  }
+
+  // 超时保护：确保 2.5 秒内一定返回（留 0.5 秒缓冲）
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      console.warn('[飞书回调] 处理超时（2.5秒），强制返回 toast');
+      const timeoutResponse = {
+        toast: {
+          type: 'error',
+          content: '处理超时，请稍后重试',
+          i18n: {
+            zh_cn: '处理超时，请稍后重试',
+            en_us: 'process timeout, please try again later'
+          }
+        }
+      };
+      console.log('[飞书回调] 超时返回 toast 响应:', JSON.stringify(timeoutResponse));
+      resolve(timeoutResponse);
+    }, 2500);
+  });
+
+  const handlerPromise = (async () => {
+    try {
+    // 确保 data 是对象
+    if (!data || typeof data !== 'object') {
+      console.warn('[飞书回调] data 不是有效对象');
+      return {
+        toast: {
+          type: 'error',
+          content: '回调数据格式错误',
+          i18n: {
+            zh_cn: '回调数据格式错误',
+            en_us: 'invalid callback data format'
+          }
+        }
+      };
+    }
+
     // 兼容两种结构：
     // 1) 文档中的 behaviors[ { type: 'callback', value: {...} } ]
     // 2) 实际 WS 返回的 data.action.value
     let payload = null;
 
-    if (Array.isArray(data.behaviors)) {
-      const behaviors = data.behaviors;
-      const firstCallback = behaviors.find(
-        (b) => b && b.type === 'callback' && b.value && typeof b.value === 'object'
-      );
-      if (firstCallback) {
-        payload = firstCallback.value;
+    try {
+      if (Array.isArray(data.behaviors)) {
+        const behaviors = data.behaviors;
+        const firstCallback = behaviors.find(
+          (b) => b && b.type === 'callback' && b.value && typeof b.value === 'object'
+        );
+        if (firstCallback) {
+          payload = firstCallback.value;
+        }
       }
-    }
 
-    if (!payload && data.action && data.action.value && typeof data.action.value === 'object') {
-      payload = data.action.value;
+      if (!payload && data.action && data.action.value && typeof data.action.value === 'object') {
+        payload = data.action.value;
+      }
+    } catch (parseErr) {
+      console.error('[飞书回调] 解析 payload 失败:', parseErr && parseErr.message ? parseErr.message : parseErr);
+      return {
+        toast: {
+          type: 'error',
+          content: '解析回调参数失败',
+          i18n: {
+            zh_cn: '解析回调参数失败',
+            en_us: 'failed to parse callback payload'
+          }
+        }
+      };
     }
 
     if (!payload) {
@@ -356,7 +416,22 @@ async function handleFeishuCardActionTrigger(data) {
       };
     }
 
-    const { force_add_schedule_json_body, email_account } = payload || {};
+    let force_add_schedule_json_body, email_account;
+    try {
+      ({ force_add_schedule_json_body, email_account } = payload || {});
+    } catch (destructErr) {
+      console.error('[飞书回调] 解构 payload 失败:', destructErr && destructErr.message ? destructErr.message : destructErr);
+      return {
+        toast: {
+          type: 'error',
+          content: '解析回调参数失败',
+          i18n: {
+            zh_cn: '解析回调参数失败',
+            en_us: 'failed to parse callback payload'
+          }
+        }
+      };
+    }
 
     if (!email_account) {
       console.warn('[飞书回调] 缺少 email_account，无法匹配用户');
@@ -373,7 +448,23 @@ async function handleFeishuCardActionTrigger(data) {
     }
 
     // 每次回调都从 users_config.json 读取最新 user_refresh_token
-    const user = await getUserFromConfig(email_account);
+    let user;
+    try {
+      user = await getUserFromConfig(email_account);
+    } catch (getUserErr) {
+      console.error('[飞书回调] 获取用户配置失败:', getUserErr && getUserErr.message ? getUserErr.message : getUserErr);
+      return {
+        toast: {
+          type: 'error',
+          content: '获取用户配置失败',
+          i18n: {
+            zh_cn: '获取用户配置失败',
+            en_us: 'failed to get user config'
+          }
+        }
+      };
+    }
+
     if (!user || !user.user_refresh_token) {
       console.warn('[飞书回调] 未在最新 users_config.json 找到对应用户或其 refresh_token:', email_account);
       return {
@@ -424,7 +515,7 @@ async function handleFeishuCardActionTrigger(data) {
     })();
 
     // 立即返回 toast，避免超过 3 秒超时
-    return {
+    const toastResponse = {
       toast: {
         type: 'success',
         content: '已接收请求，正在添加日程',
@@ -434,19 +525,27 @@ async function handleFeishuCardActionTrigger(data) {
         }
       }
     };
-  } catch (err) {
-    console.error('[飞书回调] 处理 card.action.trigger 失败:', err && err.message ? err.message : err);
-    return {
-      toast: {
-        type: 'error',
-        content: '处理失败，请稍后重试',
-        i18n: {
-          zh_cn: '处理失败，请稍后重试',
-          en_us: 'process failed, please try again later'
+    console.log('[飞书回调] 准备返回 toast 响应:', JSON.stringify(toastResponse));
+    return toastResponse;
+    } catch (err) {
+      // 最后的兜底 catch，确保任何未预料的异常都不会导致 handler 返回 undefined
+      console.error('[飞书回调] 处理 card.action.trigger 失败（外层 catch）:', err && err.message ? err.message : err);
+      console.error('[飞书回调] 错误堆栈:', err && err.stack ? err.stack : 'no stack');
+      return {
+        toast: {
+          type: 'error',
+          content: '处理失败，请稍后重试',
+          i18n: {
+            zh_cn: '处理失败，请稍后重试',
+            en_us: 'process failed, please try again later'
+          }
         }
-      }
-    };
-  }
+      };
+    }
+  })();
+
+  // 使用 Promise.race 确保 2.5 秒内一定返回
+  return Promise.race([handlerPromise, timeoutPromise]);
 }
 
 // ========== 建立飞书长连接处理回调 ==========
@@ -464,9 +563,18 @@ function startFeishuWsClient() {
     appSecret: FEISHU_APP_SECRET
   });
 
+  console.log('[飞书回调] 正在注册回调');
+  console.log('[飞书回调] 当前进程 PID:', process.pid);
+  console.log('[飞书回调] handleFeishuCardActionTrigger 函数类型:', typeof handleFeishuCardActionTrigger);
+  
   const eventDispatcher = new Lark.EventDispatcher({}).register({
-    'card.action.trigger': handleFeishuCardActionTrigger
+    'card.action.trigger': (data) => {
+      console.log('[飞书回调] EventDispatcher 收到 card.action.trigger，准备调用 handler');
+      return handleFeishuCardActionTrigger(data);
+    }
   });
+  
+  console.log('[飞书回调] EventDispatcher 注册完成');
 
   wsClient
     .start({ eventDispatcher })
