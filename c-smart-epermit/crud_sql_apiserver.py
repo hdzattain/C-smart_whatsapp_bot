@@ -2088,6 +2088,34 @@ def list_email_accounts():
     return jsonify(rows)
 
 
+@app.route("/email_accounts/check", methods=["GET", "POST"])
+def check_email_account_exists():
+    """
+    检查邮箱账号是否存在
+    - 支持 URL query 参数和 JSON body
+    - 返回简单的状态信息
+    """
+    query_params = request.args.to_dict()
+    body_params = request.get_json(silent=True) or {}
+    if not isinstance(body_params, dict):
+        body_params = {}
+    
+    params = {**body_params, **query_params}
+    email_account = params.get("email_account")
+    
+    if not email_account:
+        return jsonify({"status": "error", "message": "缺少参数: email_account"}), 400
+    
+    # 检查是否存在
+    check_sql = f"SELECT `id` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+    existing = execute_query(check_sql, (email_account,), fetch=True)
+    
+    if existing:
+        return jsonify({"status": "exists", "exists": True})
+    else:
+        return jsonify({"status": "not_found", "exists": False})
+
+
 @app.route("/email_accounts", methods=["POST"])
 def create_email_account():
     """
