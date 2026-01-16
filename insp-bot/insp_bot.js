@@ -600,39 +600,44 @@ async function _postToFastGPT(data, gConfig, user) {
   throw lastErr;
 }
 
-// ========== Messages 构建 Helper（支持文本 + 多图） ==========
-function buildMessages(contentParts, chatId) {
+// ========== Messages 构建 Helper（支持文本 + 多图 + variables） ==========
+function buildMessages(contentParts, chatId, variables = {}) {
   const content = contentParts.map(part => {
     if (part.type === 'text') return { type: 'text', text: part.text };
     if (part.type === 'image_url') return { type: 'image_url', image_url: { url: part.url } };
     throw new Error(`不支持的 type: ${part.type}`);
   });
-  return {
+  const data = {
     chatId,
     stream: false,
     detail: false,
     messages: [{ role: 'user', content }]
   };
+  // 如果有 variables，添加到请求中
+  if (Object.keys(variables).length > 0) {
+    data.variables = variables;
+  }
+  return data;
 }
 
 // ========== 原函数：纯文本 ==========
-async function sendToFastGPT({ query, user, group_id }) {
+async function sendToFastGPT({ query, user, group_id, variables = {} }) {
   const gConfig = groupConfig.groups[group_id] || groupConfig.default;
   if (!gConfig) throw new Error('未找到群組或默認配置');
 
   const contentParts = [{ type: 'text', text: query }];
-  const data = buildMessages(contentParts, group_id);
+  const data = buildMessages(contentParts, group_id, variables);
   return _postToFastGPT(data, gConfig, user);
 }
 
 // ========== 新函数：图文（query + images[]） ==========
-async function sendToFastGPTWithMedia({ query, images = [], user, group_id }) {
+async function sendToFastGPTWithMedia({ query, images = [], user, group_id, variables = {} }) {
   const gConfig = groupConfig.groups[group_id] || groupConfig.default;
   if (!gConfig) throw new Error('未找到群組或默認配置');
 
   const contentParts = [{ type: 'text', text: query }];
   images.forEach(url => contentParts.push({ type: 'image_url', url }));
-  const data = buildMessages(contentParts, group_id);
+  const data = buildMessages(contentParts, group_id, variables);
   return _postToFastGPT(data, gConfig, user);
 }
 
@@ -2021,7 +2026,8 @@ async function handlePastSummary(client, groupId) {
       replyStr = await sendToFastGPT({ 
         query: '總結', 
         user: groupId, 
-        group_id: groupId 
+        group_id: groupId,
+        variables: { group_id: groupId }
       });
       console.log(`[定时任务] FastGPT 總結 response: ${replyStr}`);
       appendLog(groupId, `[定时任务] FastGPT 總結 response: ${replyStr}`);
@@ -2122,7 +2128,8 @@ async function handleTodaySummary(client, groupId) {
       replyStr = await sendToFastGPT({ 
         query: '總結', 
         user: groupId, 
-        group_id: groupId 
+        group_id: groupId,
+        variables: { group_id: groupId }
       });
       console.log(`[定时任务] FastGPT 總結 response: ${replyStr}`);
       appendLog(groupId, `[定时任务] FastGPT 總結 response: ${replyStr}`);
