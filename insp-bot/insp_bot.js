@@ -1821,6 +1821,16 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             await client.sendReactionToMessage(msg.id, reactionEmoji);
             console.log('已发送反应');
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
+            
+            // 如果包含「原始文本與引用文本不一致」，还要回复
+            if (replyStr.includes('原始文本與引用文本不一致')) {
+              const errorReply = '當前項目與引用項目不一致，請保持引用項目和當前檢視或整改項目一致';
+              console.log(`尝试回复用户: ${errorReply}`);
+              appendLog(groupId, `尝试回复用户: ${errorReply}`);
+              await client.reply(msg.from, errorReply, msg.id);
+              console.log('已回复用户');
+              appendLog(groupId, '已回复用户');
+            }
           } else {
             // 其他情况使用 reply
             console.log(`尝试回复用户: ${replyStr}`);
@@ -3172,7 +3182,7 @@ function start(client) {
     timezone: 'Asia/Hong_Kong'
   });
 
-  // 今日总结：每天早上8:30（香港时区）
+  // 今日总结：每天晚上18:30（香港时区）
   cron.schedule('30 18 * * *', async () => {
     console.log('[定时任务] 开始执行 18:30 今日总结（香港时区）');
     for (const groupId of summaryGroups) {
