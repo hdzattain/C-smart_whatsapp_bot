@@ -425,7 +425,7 @@ def _parse_mail_date_to_iso(date_value: str) -> Optional[str]:
         return None
 
 
-def receive_emails_imap(email_account, email_password, imap_server, imap_port, receive_number=20, mailbox="inbox", unread_only=False):
+def receive_emails_imap(email_account, email_password, imap_server, imap_port, receive_number=20, mailbox="inbox", unread_only=False, today_only=False):
     result = []
     mail = None
     try:
@@ -435,13 +435,19 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
         if n > 200:
             n = 200
 
+        # 如果启用 today_only，获取香港时区的今天日期
+        today_date = None
+        if today_only:
+            hongkong_tz = pytz.timezone("Asia/Hong_Kong")
+            today_date = datetime.now(hongkong_tz).date()
+
         mail = imaplib.IMAP4_SSL(imap_server, imap_port)
         mail.login(email_account, email_password)
         # 支持选择不同的邮箱文件夹，默认 inbox
         mailbox_name = str(mailbox).strip() if mailbox else "inbox"
         mail.select(mailbox_name)
 
-        # 更简单、稳定的“最新在前”实现：UID SEARCH + 本地按 UID 倒序取前 N 封
+        # 更简单、稳定的"最新在前"实现：UID SEARCH + 本地按 UID 倒序取前 N 封
         # - 不依赖服务器 SORT 扩展（很多服务器不支持，会 BAD/NO）
         # - UID 可能不连续（删除/服务器分配策略），但通常单调递增；数字越大越新
         # 支持搜索未读邮件
@@ -454,10 +460,14 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
         if not uids:
             return {"result": []}
 
-        latest_uids = sorted(uids, key=lambda x: int(x), reverse=True)[:n]
+        # 如果启用 today_only，需要获取更多邮件以便过滤（最多 500 封）
+        # 否则只取前 n 封
+        max_fetch = 500 if today_only else n
+        latest_uids = sorted(uids, key=lambda x: int(x), reverse=True)[:max_fetch]
 
         for uid in latest_uids:
-            status, msg_data = mail.uid("fetch", uid, "(RFC822)")
+            # 使用 BODY.PEEK[] 而不是 RFC822，避免标记邮件为已读
+            status, msg_data = mail.uid("fetch", uid, "(BODY.PEEK[])")
             if status != "OK" or not msg_data or not msg_data[0]:
                 continue
 
@@ -467,20 +477,40 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
             date_header = _decode_mime_header(msg.get("Date"))
             date_iso = _parse_mail_date_to_iso(date_header) if date_header else None
             
-            # 将 date 字段也转换为北京时间格式
-            date_beijing = None
+            # 将 date 字段也转换为香港时区格式
+            date_hongkong = None
+            mail_date_hongkong = None
             if date_header:
                 try:
                     dt = parsedate_to_datetime(date_header)
                     if dt:
                         if dt.tzinfo is None:
                             dt = pytz.UTC.localize(dt)
-                        beijing_tz = pytz.timezone("Asia/Shanghai")
-                        dt_beijing = dt.astimezone(beijing_tz)
+                        hongkong_tz = pytz.timezone("Asia/Hong_Kong")
+                        dt_hongkong = dt.astimezone(hongkong_tz)
+                        mail_date_hongkong = dt_hongkong.date()
                         # 格式化为 RFC 2822 格式
-                        date_beijing = dt_beijing.strftime("%a, %d %b %Y %H:%M:%S %z")
+                        date_hongkong = dt_hongkong.strftime("%a, %d %b %Y %H:%M:%S %z")
                 except Exception:
                     pass
+            
+            # 如果启用 today_only，需要判断日期
+            if today_only and today_date:
+                if not mail_date_hongkong:
+                    # 如果无法解析日期，标记为未读并跳过
+                    try:
+                        mail.uid("store", uid, "-FLAGS", "\\Seen")
+                    except Exception:
+                        pass
+                    continue
+                if mail_date_hongkong != today_date:
+                    # 不是今天的邮件，标记为未读并跳过
+                    try:
+                        mail.uid("store", uid, "-FLAGS", "\\Seen")
+                    except Exception:
+                        pass
+                    continue
+                # 是今天的邮件，继续处理（不改变已读状态）
             
             body = _extract_mail_body_plain(msg)
 
@@ -489,11 +519,15 @@ def receive_emails_imap(email_account, email_password, imap_server, imap_port, r
                     "id": uid.decode(errors="ignore") if isinstance(uid, (bytes, bytearray)) else str(uid),
                     "from": from_addr,
                     "subject": subject,
-                    "date": date_beijing if date_beijing else date_header,
+                    "date": date_hongkong if date_hongkong else date_header,
                     "date_iso": date_iso,
                     "body": body,
                 }
             )
+            
+            # 如果启用 today_only，已经收集到足够的今天邮件，可以提前结束
+            if today_only and len(result) >= n:
+                break
     except imaplib.IMAP4.error as e:
         raise RuntimeError(f"IMAP 登录/读取失败: {str(e)}") from e
     except Exception as e:
@@ -727,6 +761,7 @@ def mail_receive_from_db():
     - receive_number 可选：指定收取邮件数量，默认 20
     - unread_only 可选：是否只获取未读邮件，默认 false（全部获取）
     - mailbox 可选：指定邮箱文件夹，默认 inbox
+    - today_only 可选：是否只获取今天的邮件（香港时区），默认 false（全部获取）
     """
     # 隐私要求：不允许使用 URL query 传任何参数（避免进 nginx/flask 日志）
     if request.args:
@@ -758,6 +793,10 @@ def mail_receive_from_db():
         unread_only = data.get("unread_only", False)
         if isinstance(unread_only, str):
             unread_only = unread_only.lower() in ("true", "1", "yes")
+        # 支持只获取今天的邮件（香港时区），默认 false（全部获取）
+        today_only = data.get("today_only", False)
+        if isinstance(today_only, str):
+            today_only = today_only.lower() in ("true", "1", "yes")
     except ValueError as e:
         return _json_error(str(e), 400)
 
@@ -804,6 +843,7 @@ def mail_receive_from_db():
                     receive_number=receive_number,
                     mailbox=mailbox,
                     unread_only=unread_only,
+                    today_only=today_only,
                 )
                 all_results.append({
                     "email_account": acc,
