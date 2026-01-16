@@ -8,6 +8,7 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const axios = require('axios');
 const Lark = require('@larksuiteoapi/node-sdk');
 const FastGPTClient = require('../email_calendar_fastgpt/fastgpt_client');
 
@@ -16,43 +17,47 @@ const FASTGPT_URL = process.env.FASTGPT_URL || '';
 const FASTGPT_API_KEY = process.env.FASTGPT_API_KEY || '';
 const FEISHU_APP_ID = process.env.FEISHU_APP_ID || process.env.LARK_APP_ID || '';
 const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || process.env.LARK_APP_SECRET || '';
+const API_BASE_URL = process.env.API_BASE_URL || '';
 
-// 加载用户配置
-const USERS_CONFIG_PATH = path.join(__dirname, 'users_config.json');
-let USERS = [];
-
-try {
-  if (fs.existsSync(USERS_CONFIG_PATH)) {
-    const configContent = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-    USERS = JSON.parse(configContent);
-    console.log(`[配置] 加载了 ${USERS.length} 个用户配置`);
-  } else {
-    console.warn(`[警告] 未找到用户配置文件: ${USERS_CONFIG_PATH}`);
-    console.warn('[提示] 请创建 users_config.json 文件，格式参考 users_config.example.json');
+// 从 API 接口加载用户配置
+async function loadUsersFromAPI() {
+  try {
+    const response = await axios.get(`${API_BASE_URL}/email_accounts`);
+    if (!Array.isArray(response.data)) {
+      console.warn('[配置] API 返回格式异常（不是数组）');
+      return [];
+    }
+    const users = response.data.map(account => ({
+      email_account: account.email_account
+    }));
+    console.log(`[配置] 从 API 加载了 ${users.length} 个用户配置`);
+    return users;
+  } catch (err) {
+    console.error(`[ERR] 从 API 加载用户配置失败:`, err.message);
+    if (err.response) {
+      console.error(`[ERR] API 响应状态: ${err.response.status}, 数据:`, err.response.data);
+    }
+    throw err;
   }
-} catch (err) {
-  console.error(`[ERR] 加载用户配置失败:`, err.message);
-  process.exit(1);
 }
 
-// 从 users_config.json 读取用户配置
+// 从 API 接口读取用户配置
 async function getUserFromConfig(emailAccount) {
   if (!emailAccount) return null;
   try {
-    const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-    const usersOnDisk = JSON.parse(raw);
-    if (!Array.isArray(usersOnDisk)) {
-      console.warn('[配置] users_config.json 格式异常（不是数组）');
+    const response = await axios.get(`${API_BASE_URL}/email_accounts`, {
+      params: { email_account: emailAccount }
+    });
+    if (!Array.isArray(response.data) || response.data.length === 0) {
+      console.warn('[配置] API 未找到用户:', emailAccount);
       return null;
     }
-    const user = usersOnDisk.find(u => u && u.email_account === emailAccount);
-    if (!user) {
-      console.warn('[配置] users_config.json 未找到用户:', emailAccount);
-      return null;
-    }
-    return user;
+    const account = response.data[0];
+    return {
+      email_account: account.email_account
+    };
   } catch (err) {
-    console.error('[配置] 读取 users_config.json 失败（getUserFromConfig）:', err.message);
+    console.error('[配置] 从 API 读取用户配置失败（getUserFromConfig）:', err.message);
     return null;
   }
 }
@@ -84,53 +89,56 @@ const TASK_TYPES = [
   }
 ];
 
-// 为每个用户创建任务
-// 加日程任务1：8-11点、13-17点、19-22点每小时执行
-// 加日程任务2：11:50和17:50执行
-// 总结任务：12点和18点执行（会先执行加日程再执行总结）
-const TASKS = USERS.flatMap(user => {
-  const scheduleTask1 = {
-    name: `定时自动加日程-${user.email_account}`,
-    schedule: TASK_TYPES[0].schedule,
-    timezone: TASK_TIMEZONE,
-    query: TASK_TYPES[0].query,
-    user: user.email_account,
-    email_account: user.email_account,
-    taskType: 'schedule'
+// 为单个用户执行任务
+async function executeTaskForUser(emailAccount, taskType) {
+  const taskConfig = TASK_TYPES[taskType];
+  if (!taskConfig) {
+    console.error(`[ERR] 无效的任务类型: ${taskType}`);
+    return;
+  }
+
+  const task = {
+    name: `${taskConfig.name}-${emailAccount}`,
+    query: taskConfig.query,
+    user: emailAccount,
+    email_account: emailAccount,
+    taskType: taskConfig.name.includes('总结') ? 'summary' : 'schedule'
   };
 
-  const scheduleTask2 = {
-    name: `定时自动加日程（提前10分钟）-${user.email_account}`,
-    schedule: TASK_TYPES[1].schedule,
-    timezone: TASK_TIMEZONE,
-    query: TASK_TYPES[1].query,
-    user: user.email_account,
-    email_account: user.email_account,
-    taskType: 'schedule'
-  };
-  
-  const summaryTask = {
-    name: `定时自动总结-${user.email_account}`,
-    schedule: TASK_TYPES[2].schedule,
-    timezone: TASK_TIMEZONE,
-    query: TASK_TYPES[2].query,
-    user: user.email_account,
-    email_account: user.email_account,
-    taskType: 'summary'
-  };
-  
-  return [scheduleTask1, scheduleTask2, summaryTask];
+  await executeTask(task);
+}
 
-});
+// 执行定时任务（会先获取所有用户，然后为每个用户执行）
+async function executeScheduledTask(taskTypeIndex) {
+  try {
+    console.log(`[定时任务] 开始执行任务类型: ${TASK_TYPES[taskTypeIndex].name}`);
+    
+    // 从 API 获取最新的用户列表
+    const users = await loadUsersFromAPI();
+    if (!users || users.length === 0) {
+      console.warn('[定时任务] 未找到任何用户，跳过本次执行');
+      return;
+    }
+
+    console.log(`[定时任务] 找到 ${users.length} 个用户，开始为每个用户执行任务`);
+    
+    // 为每个用户执行任务（并行执行）
+    const promises = users.map(user => 
+      executeTaskForUser(user.email_account, taskTypeIndex).catch(err => {
+        console.error(`[ERR] 用户 ${user.email_account} 的任务执行失败:`, err.message);
+      })
+    );
+    
+    await Promise.all(promises);
+    console.log(`[定时任务] ${TASK_TYPES[taskTypeIndex].name} 执行完成`);
+  } catch (err) {
+    console.error(`[ERR] 定时任务 ${TASK_TYPES[taskTypeIndex].name} 执行失败:`, err.message);
+  }
+}
 
 // ========== 初始化客户端（每个任务使用自己的客户端） ==========
 if (!FASTGPT_URL || !FASTGPT_API_KEY) {
   console.error('[ERR] 缺少配置：FASTGPT_URL 或 FASTGPT_API_KEY');
-  process.exit(1);
-}
-
-if (TASKS.length === 0) {
-  console.error('[ERR] 没有配置任何用户，请检查 users_config.json');
   process.exit(1);
 }
 
@@ -187,17 +195,18 @@ async function executeTask(task) {
 function startScheduledTasks() {
   console.log('[服务] 开始启动定时任务...');
   
-  TASKS.forEach(task => {
-    const options = task.timezone ? { timezone: task.timezone } : {};
+  // 为每个任务类型注册定时任务
+  TASK_TYPES.forEach((taskType, index) => {
+    const options = TASK_TIMEZONE ? { timezone: TASK_TIMEZONE } : {};
     
-    cron.schedule(task.schedule, async () => {
-      await executeTask(task);
+    cron.schedule(taskType.schedule, async () => {
+      await executeScheduledTask(index);
     }, options);
     
-    console.log(`[服务] 已注册定时任务: ${task.name}, 计划: ${task.schedule}${task.timezone ? ` (时区: ${task.timezone})` : ''}`);
+    console.log(`[服务] 已注册定时任务: ${taskType.name}, 计划: ${taskType.schedule}${TASK_TIMEZONE ? ` (时区: ${TASK_TIMEZONE})` : ''}`);
   });
   
-  console.log('[服务] 所有定时任务已启动');
+  console.log('[服务] 所有定时任务已启动（每次执行时会从 API 获取最新的用户列表）');
 }
 
 // ========== 飞书 card.action.trigger 处理函数，可复用 ==========
@@ -453,38 +462,110 @@ function startFeishuWsClient() {
 
 // ========== 手动执行任务（用于测试） ==========
 async function runTaskManually(taskName) {
-  const task = TASKS.find(t => t.name === taskName);
-  if (!task) {
-    console.error(`[ERR] 未找到任务: ${taskName}`);
+  // 从 API 获取最新的用户列表
+  const users = await loadUsersFromAPI();
+  if (!users || users.length === 0) {
+    console.error('[ERR] 未找到任何用户');
     return;
   }
-  await executeTask(task);
+
+  // 解析任务名称，找到对应的任务类型
+  let taskTypeIndex = -1;
+  if (taskName.includes('定时自动加日程') && !taskName.includes('提前10分钟')) {
+    taskTypeIndex = 0;
+  } else if (taskName.includes('提前10分钟')) {
+    taskTypeIndex = 1;
+  } else if (taskName.includes('定时自动总结')) {
+    taskTypeIndex = 2;
+  }
+
+  if (taskTypeIndex === -1) {
+    console.error(`[ERR] 无法识别任务类型: ${taskName}`);
+    console.log('[提示] 支持的任务名称格式: "定时自动加日程-<email>" 或 "定时自动总结-<email>"');
+    return;
+  }
+
+  // 如果任务名包含 email_account，只为该用户执行；否则为所有用户执行
+  const emailMatch = taskName.match(/-([^-\s]+)$/);
+  if (emailMatch) {
+    const emailAccount = emailMatch[1];
+    await executeTaskForUser(emailAccount, taskTypeIndex);
+  } else {
+    // 为所有用户执行
+    console.log(`[手动任务] 为所有 ${users.length} 个用户执行: ${TASK_TYPES[taskTypeIndex].name}`);
+    const promises = users.map(user => 
+      executeTaskForUser(user.email_account, taskTypeIndex).catch(err => {
+        console.error(`[ERR] 用户 ${user.email_account} 的任务执行失败:`, err.message);
+      })
+    );
+    await Promise.all(promises);
+  }
 }
 
 // ========== 主程序 ==========
 if (require.main === module) {
-  console.log('[服务] FastGPT 定时任务服务启动中...');
-  console.log(`[配置] URL: ${FASTGPT_URL}`);
-  console.log(`[配置] 用户数量: ${USERS.length}`);
-  console.log(`[配置] 任务数量: ${TASKS.length}`);
-  if (TASKS.length > 0) {
-    console.log(`[配置] 用户列表: ${USERS.map(u => u.email_account).join(', ')}`);
-  }
-  
-  // 处理命令行参数
-  const args = process.argv.slice(2);
-  
-  // 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>
-  if (args[0] === 'run' && args[1]) {
-    console.log('[服务] 以 run 模式启动，立即建立飞书长连接...');
-    // 先启动飞书长连接，防止回调过早到达
+  (async () => {
+    console.log('[服务] FastGPT 定时任务服务启动中...');
+    console.log(`[配置] FastGPT URL: ${FASTGPT_URL}`);
+    console.log(`[配置] API Base URL: ${API_BASE_URL}`);
+    
+    // 测试 API 连接（可选，用于启动时验证）
+    try {
+      const users = await loadUsersFromAPI();
+      console.log(`[配置] API 连接正常，当前有 ${users.length} 个用户`);
+      if (users.length > 0) {
+        console.log(`[配置] 用户列表: ${users.map(u => u.email_account).join(', ')}`);
+      }
+    } catch (err) {
+      console.warn('[警告] 启动时无法连接 API，但服务仍会启动（定时任务执行时会重试）');
+    }
+    
+    // 处理命令行参数
+    const args = process.argv.slice(2);
+    
+    // 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>
+    if (args[0] === 'run' && args[1]) {
+      console.log('[服务] 以 run 模式启动，立即建立飞书长连接...');
+      // 先启动飞书长连接，防止回调过早到达
+      startFeishuWsClient();
+
+      // 保持进程运行，等待回调
+      console.log('[提示] 长连接已启动，稍后将执行一次手动任务');
+      console.log('[提示] 现在就可以在飞书里点击卡片，回调会在这里显示');
+      console.log('[提示] 使用 Ctrl+C 停止服务');
+
+      // 优雅退出
+      process.on('SIGINT', () => {
+        console.log('\n[服务] 收到退出信号，正在关闭...');
+        process.exit(0);
+      });
+      
+      process.on('SIGTERM', () => {
+        console.log('\n[服务] 收到终止信号，正在关闭...');
+        process.exit(0);
+      });
+
+      // 执行指定任务
+      runTaskManually(args[1]).then(() => {
+        console.log('[服务] 手动任务执行完成（长连接仍在运行，等待飞书回调）');
+      }).catch(err => {
+        console.error('[ERR] 手动任务执行失败:', err);
+        process.exit(1);
+      });
+      return;
+    }
+    
+    // 启动定时任务（每次执行时会从 API 获取最新用户列表）
+    startScheduledTasks();
+
+    // 启动飞书长连接回调处理
     startFeishuWsClient();
-
-    // 保持进程运行，等待回调
-    console.log('[提示] 长连接已启动，稍后将执行一次手动任务');
-    console.log('[提示] 现在就可以在飞书里点击卡片，回调会在这里显示');
+    // 保持进程运行
+    console.log('[服务] 服务已启动，等待定时任务执行...');
+    console.log('[提示] 每次定时任务执行时会自动从 API 获取最新的用户列表');
     console.log('[提示] 使用 Ctrl+C 停止服务');
-
+    console.log('[提示] 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>');
+    
     // 优雅退出
     process.on('SIGINT', () => {
       console.log('\n[服务] 收到退出信号，正在关闭...');
@@ -495,37 +576,7 @@ if (require.main === module) {
       console.log('\n[服务] 收到终止信号，正在关闭...');
       process.exit(0);
     });
-
-    // 再执行一次指定任务（不会影响长连接）
-    runTaskManually(args[1]).then(() => {
-      console.log('[服务] 手动任务执行完成（长连接仍在运行，等待飞书回调）');
-    }).catch(err => {
-      console.error('[ERR] 手动任务执行失败:', err);
-      process.exit(1);
-    });
-    return;
-  }
-  
-  // 启动定时任务
-  startScheduledTasks();
-
-  // 启动飞书长连接回调处理
-  startFeishuWsClient();
-  // 保持进程运行
-  console.log('[服务] 服务已启动，等待定时任务执行...');
-  console.log('[提示] 使用 Ctrl+C 停止服务');
-  console.log('[提示] 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>');
-  
-  // 优雅退出
-  process.on('SIGINT', () => {
-    console.log('\n[服务] 收到退出信号，正在关闭...');
-    process.exit(0);
-  });
-  
-  process.on('SIGTERM', () => {
-    console.log('\n[服务] 收到终止信号，正在关闭...');
-    process.exit(0);
-  });
+  })();
 }
 
 // ========== 导出 ==========
