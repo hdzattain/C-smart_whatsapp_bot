@@ -1,1 +1,9 @@
 .DS_Store
+
+# Node.js 依赖
+node_modules/
+
+# 环境变量文件（包含敏感信息如密钥）
+.env
+.env.local
+.env.*.local
