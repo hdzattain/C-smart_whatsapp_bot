@@ -3106,6 +3106,9 @@ function start(client) {
   const targetGroups = process.env.AI_ANDACHEN_TARGET_GROUPS
     ? process.env.AI_ANDACHEN_TARGET_GROUPS.split(',').map(g => g.trim())
     : [];
+  const adminGroups = process.env.AI_ANDACHEN_ADMIN_GROUPS
+    ? process.env.AI_ANDACHEN_ADMIN_GROUPS.split(',').map(g => g.trim())
+    : [];
 
   // AI 进度更新：每天下午5点（香港时区 UTC+8）
   // 如果服务器是 UTC，17:00 HKT = 09:00 UTC；如果服务器是 HKT，直接使用 17:00
@@ -3141,7 +3144,8 @@ function start(client) {
 
   cron.schedule('30 18 * * *', async () => {
     console.log('[定时任务] 开始执行 18:30 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressSummary(client, groupId);
     }
   }, {
