@@ -3,6 +3,8 @@ const qrcode = require('qrcode-terminal');
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs-extra');
+const fs_2 = require('fs');
+const fsPromises = fs_2.promises
 const path = require('path');
 const FormData = require('form-data');
 const mime = require('mime-types');
@@ -694,31 +696,50 @@ async function handleMessage(msg) {
         }
         return;  // 拦截后不再往下走 FastGPT 流程
       }
-    } else if (msg.type === 'image') {
-      // 图片（可能带有文字 caption）
-      const mediaData = await client.downloadMedia(msg);
-      if (mediaData) {
-        const ext = mime.extension(msg.mimetype) || 'jpg';
-        const filename = `img_${Date.now()}.${ext}`;
-        const filepath = path.join(TMP_DIR, filename);
-        await fs.writeFile(filepath, media.data, 'base64');
-        console.log(`图片已保存: ${filepath}`);
-        appendLog(groupId, `图片已保存: ${filepath}`);
+    } else if (msg.type === 'image' || msg.type === 'album') {
+      // 图片或相册（可能带有文字 caption）
+      // 支持相册场景：如果是 album，并且存在 medias 数组，则对每一张图片单独处理
+      const mediaMessages =
+        msg.type === 'album' && Array.isArray(msg.medias) && msg.medias.length
+          ? msg.medias
+          : [msg];
 
-        // 支持图文混合：读取 caption 或 body
-        const caption = msg.caption || msg.body || '';
-        query = caption ? `[图片] ${caption}` : '[图片]';
+      const savedFiles = [];
+      for (const mediaMsg of mediaMessages) {
+        const media = await client.downloadMedia(mediaMsg);
+        if (media) {
+          const ext = mime.extension(mediaMsg.mimetype) || 'jpg';
+          const filename = `img_${Date.now()}_${savedFiles.length}.${ext}`;
+          const filepath = path.join(TMP_DIR, filename);
+          // media is base64 string, remove prefix if present
+          const base64Data = media.replace(/^data:.*;base64,/, '');
+          await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
+          savedFiles.push(filepath);
+          console.log(`图片已保存: ${filepath}`);
+          appendLog(groupId, `图片已保存: ${filepath}`);
+        }
+      }
+
+      // 支持图文混合：读取 caption 或 body（album 的 caption 在原始 msg 上）
+      const caption = msg.caption || msg.body || '';
+      const imageCount = savedFiles.length;
+      if (imageCount > 0) {
+        if (msg.type === 'album') {
+          query = caption ? `[相册 ${imageCount}张图片] ${caption}` : `[相册 ${imageCount}张图片]`;
+        } else {
+          query = caption ? `[图片] ${caption}` : '[图片]';
+        }
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
       }
     } else if (['ptt', 'audio'].includes(msg.type)) {
-      const mediaData = await client.downloadMedia(msg);
-      if (mediaData) {
+      const media = await client.downloadMedia(msg);
+      if (media) {
         const ext = mime.extension(msg.mimetype) || 'ogg';
         const filename = `audio_${Date.now()}.${ext}`;
         const filepath = path.join(TMP_DIR, filename);
-        const base64Data = mediaData.replace(/^data:.*;base64,/, '');
-        await fs.writeFile(filepath, base64Data, 'base64');
+        const base64Data = media.replace(/^data:.*;base64,/, '');
+        await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
         console.log(`语音已保存: ${filepath}`);
         appendLog(groupId, `语音已保存: ${filepath}`);
         query = await audioToText(filepath, user);
@@ -1053,7 +1074,7 @@ async function getSummary(group_id) {
   });
   const data = resp.data;
   const summary = formatSummary(data, group_id);
-  await client.sendMessage(group_id, summary); // 主动发到群聊
+  await client.sendText(group_id, summary); // 主动发到群聊
 }
 
 async function getOTSummary(group_id) {
@@ -1064,7 +1085,7 @@ async function getOTSummary(group_id) {
   });
   const data = resp.data;
   const summary = formatOTSummary(data);
-  await client.sendMessage(group_id, summary); // 主动发到群聊
+  await client.sendText(group_id, summary); // 主动发到群聊
 }
 
 // 汇总生成函数
@@ -1078,12 +1099,12 @@ async function sendTodaySummary() {
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
-    await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -1100,12 +1121,12 @@ async function sendOTSummary() {
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
-    await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
   }
 }
 
