@@ -161,7 +161,7 @@ def get_conn():
     return connect(**DB_CONFIG)
 
 
-def execute_query(sql, params=(), fetch=False, many=False):
+def execute_query(sql, params=(), fetch=False, many=False, return_lastrowid: bool = False):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -169,6 +169,8 @@ def execute_query(sql, params=(), fetch=False, many=False):
             if fetch:
                 return cur.fetchall()
             conn.commit()
+            if return_lastrowid and not many:
+                return cur.lastrowid
             return cur.rowcount
     finally:
         conn.close()
@@ -335,10 +337,19 @@ def _decode_payload_smart(payload: bytes, declared_charset: Optional[str] = None
         return ""
     
     # 常见编码列表（按优先级）
-    encodings = []
+    # 需求：优先级按照 encodings_to_try（gb18030 最高）
+    encodings_to_try = [
+        "gb18030",  # 最全的中文字符集，兼容 gb2312/gbk
+        "utf-8",    # 通用标准
+        "big5",     # 繁体中文
+        "gbk",      # 简体中文常见
+        "latin-1",  # 兜底
+    ]
+    encodings = ["gb18030"]
     if declared_charset:
+        # 不抢占 gb18030 的最高优先级，但也保留声明编码的尝试机会
         encodings.append(declared_charset.lower())
-    encodings.extend(["utf-8", "gbk", "gb2312", "big5", "latin1", "iso-8859-1"])
+    encodings.extend(encodings_to_try[1:])
     
     # 去重但保持顺序
     seen = set()
@@ -1307,8 +1318,9 @@ def insert_one_record(data):
             return {"error": f"部分撤離人數({new_part})不能大於總人數({number})，请重新输入"}
 
         # 构造插入数据
-        record = {k: data.get(k) for k in FIELDS}
-        record["id"] = data.get("id") or int(datetime.utcnow().timestamp())
+        # - id 建议由数据库 AUTO_INCREMENT 生成，因此这里不再由服务端生成/传入
+        insert_fields = [f for f in FIELDS if f != "id"]
+        record = {k: data.get(k) for k in insert_fields}
         record["uuid"] = data.get("uuid") or str(uuid.uuid4())
         record["xiaban"] = 1 if new_part == number else 0
 
@@ -1316,15 +1328,15 @@ def insert_one_record(data):
         record["bstudio_create_time"] = datetime.now(hkt_tz).strftime("%Y-%m-%d %H:%M:%S")
 
         # 插入
-        cols = ", ".join(f"`{f}`" for f in FIELDS)
-        placeholders = ", ".join(["%s"] * len(FIELDS))
-        values = tuple(record[f] for f in FIELDS)
+        cols = ", ".join(f"`{f}`" for f in insert_fields)
+        placeholders = ", ".join(["%s"] * len(insert_fields))
+        values = tuple(record.get(f) for f in insert_fields)
         sql = f"INSERT INTO `{TABLE_NAME}` ({cols}) VALUES ({placeholders})"
         try:
-            execute_query(sql, values)
+            inserted_id = execute_query(sql, values, return_lastrowid=True)
         except Exception as e:
             return {"error": "插入失败", "detail": str(e)}
-        return {"status": "ok", "inserted_id": record["id"]}
+        return {"status": "ok", "inserted_id": inserted_id}
 
 
 
