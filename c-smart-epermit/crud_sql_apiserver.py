@@ -104,6 +104,16 @@ EMAIL_EVERYDAY_FIELDS = [
     "created_at",
 ]
 
+# --- 群组文件表配置 ---
+GROUP_FILES_TABLE = "CEQManagement"
+GROUP_FILES_FIELDS = [
+    "id",
+    "group_id",
+    "bstudio_create_time",
+    "file_url",
+    "file_name",
+]
+
 # --- 加密密钥配置 ---
 # 从 .env 文件读取 EMAIL_ENCRYPTION_KEY，必须设置
 ENCRYPTION_KEY_RAW = os.getenv("EMAIL_ENCRYPTION_KEY")
@@ -2099,6 +2109,176 @@ def update_jiaodika(record_id):
     if affected == 0:
         return jsonify({"error": "未找到该记录"}), 404
     return jsonify({"status": "ok", "updated_id": record_id})
+
+
+# ==========================
+# group_files 表：查询 & 更新
+# ==========================
+
+
+@app.route("/group_files", methods=["GET"])
+def list_group_files():
+    """
+    查询 group_files 表
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 仅支持已知字段过滤（GROUP_FILES_FIELDS）
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in GROUP_FILES_FIELDS:
+            if k == "bstudio_create_time" and v:
+                # 支持传 YYYY-MM-DD，按一天范围查
+                try:
+                    dt = datetime.strptime(v[:10], "%Y-%m-%d")
+                    start = dt.strftime("%Y-%m-%d 00:00:00")
+                    end = dt.strftime("%Y-%m-%d 23:59:59")
+                    conditions.append("`bstudio_create_time` BETWEEN %s AND %s")
+                    params.extend([start, end])
+                    continue
+                except Exception:
+                    # 解析失败则按等值匹配
+                    pass
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{GROUP_FILES_TABLE}` {where} ORDER BY `id` DESC"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
+
+def _insert_one_group_file(data: dict):
+    """
+    插入一条 group_files 记录
+    - 允许部分字段缺省，只插入提供的字段
+    - 自动填充 bstudio_create_time（如未提供）
+    - group_id, file_url, file_name 为必填字段
+    """
+    if not isinstance(data, dict):
+        return {"error": "每条记录必须是 JSON 对象"}
+
+    # 校验必填字段
+    if not data.get("group_id"):
+        return {"error": "缺少必填字段: group_id"}
+    if not data.get("file_url"):
+        return {"error": "缺少必填字段: file_url"}
+    if not data.get("file_name"):
+        return {"error": "缺少必填字段: file_name"}
+
+    # 自动时间
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    record = {}
+    for k in GROUP_FILES_FIELDS:
+        if k == "id":
+            # 一般由数据库自增，如需手动传入也允许
+            if "id" in data:
+                record["id"] = data.get("id")
+            continue
+        if k == "bstudio_create_time":
+            record[k] = data.get(k) or now_str
+            continue
+        if k in data:
+            record[k] = data.get(k)
+
+    # 只插入有值的字段
+    cols = []
+    vals = []
+    for k, v in record.items():
+        if v is not None:
+            cols.append(f"`{k}`")
+            vals.append(v)
+
+    if not cols:
+        return {"error": "没有可插入字段"}
+
+    placeholders = ", ".join(["%s"] * len(cols))
+    cols_sql = ", ".join(cols)
+    sql = f"INSERT INTO `{GROUP_FILES_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+
+    try:
+        inserted_id = execute_query(sql, tuple(vals), return_lastrowid=True)
+        return {"status": "ok", "inserted_id": inserted_id, "affected_rows": 1}
+    except Exception as e:
+        return {"error": "插入失败", "detail": str(e)}
+
+
+@app.route("/group_files", methods=["POST"])
+def create_group_file():
+    """
+    新增 group_files 记录
+    - 支持单条：body 为 JSON 对象
+    - 支持批量：body 为 JSON 数组
+    """
+    data = request.get_json(force=True)
+
+    # 批量
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_group_file(rec)
+            results.append(res)
+        # 有错误时返回 207，和 /records 接口风格保持一致
+        has_error = any(isinstance(r, dict) and r.get("error") for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    # 单条
+    res = _insert_one_group_file(data)
+    if isinstance(res, dict) and res.get("error"):
+        # 和上面 /records 保持类似语义，这里直接 200 兼容现有调用方式
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+@app.route("/group_files/<int:record_id>", methods=["GET"])
+def get_group_file(record_id):
+    """按 id 查询 group_files 记录"""
+    sql = f"SELECT * FROM `{GROUP_FILES_TABLE}` WHERE `id`=%s"
+    rows = execute_query(sql, (record_id,), fetch=True)
+    if not rows:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify(rows[0])
+
+
+@app.route("/group_files/<int:record_id>", methods=["PUT"])
+def update_group_file(record_id):
+    """
+    按 id 更新 group_files 表
+    - body 为要更新的字段，忽略 id
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    updates = [f"`{k}`=%s" for k in data if k in GROUP_FILES_FIELDS and k != "id"]
+    if not updates:
+        return jsonify({"error": "无可更新字段"}), 400
+
+    sql = f"UPDATE `{GROUP_FILES_TABLE}` SET {', '.join(updates)} WHERE `id`=%s"
+    params = tuple(data[k] for k in data if k in GROUP_FILES_FIELDS and k != "id") + (record_id,)
+
+    affected = execute_query(sql, params)
+    if affected == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "updated_id": record_id})
+
+
+@app.route("/group_files/<int:record_id>", methods=["DELETE"])
+def delete_group_file(record_id):
+    """按 id 删除 group_files 记录"""
+    sql = f"DELETE FROM `{GROUP_FILES_TABLE}` WHERE `id`=%s"
+    deleted = execute_query(sql, (record_id,))
+    if deleted == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "deleted_id": record_id})
 
 
 # ==========================
