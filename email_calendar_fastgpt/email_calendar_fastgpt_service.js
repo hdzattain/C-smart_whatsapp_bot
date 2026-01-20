@@ -69,18 +69,18 @@ const TASK_TIMEZONE = process.env.FASTGPT_TIMEZONE || 'Asia/Hong_Kong';
 
 // 任务类型配置
 const TASK_TYPES = [
-  {
-    name: '定时自动加日程',
-    // 加日程任务1：8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
-    schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
-    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
-  },
-  {
-    name: '定时自动加日程（提前10分钟）',
-    // 加日程任务2：11:50 和 17:50 执行
-    schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
-    query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
-  },
+  // {
+  //   name: '定时自动加日程',
+  //   // 加日程任务1：8-11点、13-17点、19-22点每小时执行（排除12点和18点，因为这两个时间点会在总结任务中先执行加日程）
+  //   schedule: process.env.FASTGPT_CRON_SCHEDULE || '0 8-11,13-17,19-22 * * *',
+  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  // },
+  // {
+  //   name: '定时自动加日程（提前10分钟）',
+  //   // 加日程任务2：11:50 和 17:50 执行
+  //   schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
+  //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
+  // },
   {
     name: '定时自动总结',
     // 总结任务：12点和18点执行
