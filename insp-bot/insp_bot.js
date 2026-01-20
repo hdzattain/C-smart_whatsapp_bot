@@ -1082,6 +1082,13 @@ function parseContentDispositionFilename(disposition = '') {
 }
 
 async function fetchLatestGroupFileRecord(groupId, dateISO) {
+  // 配置兜底：未配置时直接给出明确错误，避免 axios 报 "Invalid URL" 刷屏
+  if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+    throw new Error(
+      `GROUP_FILES_API_URL 未配置或不是有效 http(s) URL：${JSON.stringify(GROUP_FILES_API_URL)}`
+    );
+  }
+
   // 后端支持 GET JSON body；bstudio_create_time 传 YYYY-MM-DD 会按当天范围查
   const payload = {
     group_id: groupId,
@@ -1142,6 +1149,14 @@ async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDi
 async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
   const dateISO = isoDateInTZ('Asia/Hong_Kong');
   appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
+
+  // 配置缺失时直接跳过，避免定时任务持续报错刷屏
+  if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+    const tip = `[AdminGroupFiles] 跳过：未配置 GROUP_FILES_API_URL（需要 http(s) URL），当前=${JSON.stringify(GROUP_FILES_API_URL)}`;
+    console.warn(tip);
+    appendLog(adminGroupId, tip);
+    return null;
+  }
 
   const rec = await fetchLatestGroupFileRecord(adminGroupId, dateISO);
   if (!rec) {
@@ -3420,10 +3435,22 @@ function start(client) {
   // AdminGroups：每天 08:00、10:00 拉取当日最新群文件并下载到本地 tmp（香港时区）
   // 先只做“拉取+下载+日志”，后续处理你说等下再碰
   const runAdminGroupsDownload = async (whenLabel) => {
-    if (!adminGroups.length) return;
+    // whenLabel 只是“本次任务标签”（例如原计划 08:00/10:00），不代表当前触发时间
+    if (!adminGroups.length) {
+      console.log(`[AdminGroupFiles] 跳过本次 ${whenLabel}：AI_ANDACHEN_ADMIN_GROUPS 为空或未配置`);
+      return;
+    }
+    if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+      const tip = `[AdminGroupFiles] 跳过本次 ${whenLabel}：未配置 GROUP_FILES_API_URL（需要 http(s) URL），当前=${JSON.stringify(GROUP_FILES_API_URL)}`;
+      console.warn(tip);
+      // 这里没有具体 gid，写一条全局日志即可
+      appendLog('admin-groups', tip);
+      return;
+    }
     for (const gid of adminGroups) {
       if (!gid) continue;
       try {
+        console.log(`[AdminGroupFiles] 开始处理群=${gid} 标签=${whenLabel}`);
         await handleAdminGroupDailyFileDownload(client, gid, whenLabel);
       } catch (e) {
         const msg = e?.message || String(e);
@@ -3433,15 +3460,15 @@ function start(client) {
     }
   };
 
-  cron.schedule('25 16 * * *', async () => {
-    console.log('[定时任务] 20:00 AdminGroups 群文件拉取+下载（香港时区）');
+  cron.schedule('* * * * *', async () => {
+    console.log('[定时任务] 16:30 AdminGroups 群文件拉取+下载（香港时区）');
     await runAdminGroupsDownload('08:00');
   }, { timezone: 'Asia/Hong_Kong' });
 
-  cron.schedule('0 22 * * *', async () => {
-    console.log('[定时任务] 22:00 AdminGroups 群文件拉取+下载（香港时区）');
-    await runAdminGroupsDownload('10:00');
-  }, { timezone: 'Asia/Hong_Kong' });
+  // cron.schedule('0 22 * * *', async () => {
+  //   console.log('[定时任务] 22:00 AdminGroups 群文件拉取+下载（香港时区）');
+  //   await runAdminGroupsDownload('10:00');
+  // }, { timezone: 'Asia/Hong_Kong' });
 
   // 下午2:30定时任务：针对特定群组，先执行 AI 进度更新，然后执行 AI 进度总结
 }
