@@ -223,6 +223,49 @@ function _makeContentLineFromText(partText) {
   return `"content": ${JSON.stringify(contentString)}`;
 }
 
+// 简单的飞书文本告警（例如 IMAP 登录失败时通知管理员）
+async function _sendFeishuAlertToAdmin(text) {
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
+    console.warn('[飞书告警] 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，跳过发送');
+    return;
+  }
+  const emailsEnv =
+    process.env.EMAIL_ALERT_FEISHU_EMAIL ||
+    process.env.EMAIL_SUMMARY_FEISHU_EMAIL ||
+    'yilin.wu02@cohl.com';
+  const targetEmails = emailsEnv
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (targetEmails.length === 0) {
+    console.warn('[飞书告警] 未找到任何有效告警邮箱，跳过发送');
+    return;
+  }
+
+  const client = new Lark.Client({
+    appId: FEISHU_APP_ID,
+    appSecret: FEISHU_APP_SECRET,
+    disableTokenCache: false
+  });
+
+  const content = JSON.stringify({ text });
+  for (const targetEmail of targetEmails) {
+    try {
+      await client.im.v1.message.create({
+        params: { receive_id_type: 'email' },
+        data: {
+          receive_id: targetEmail,
+          msg_type: 'text',
+          content
+        }
+      });
+      console.log('[飞书告警] 已发送:', targetEmail, text);
+    } catch (e) {
+      console.error('[飞书告警] 发送失败:', targetEmail, e && e.message ? e.message : e);
+    }
+  }
+}
+
 // 发送每日摘要到飞书：每个 part 一条消息，按 part_1, part_2... 顺序
 async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
   if (!Array.isArray(parts) || parts.length === 0) return;
@@ -796,6 +839,11 @@ async function runEmailPipelinePull() {
         totalSaved += (r.saved || 0);
       } catch (e) {
         console.error('[emails][pull] 用户失败:', u.email_account, e && e.message ? e.message : e);
+        // IMAP 登录或拉取失败时，给管理员发一条飞书告警
+        const msg = `[邮箱拉取失败]\n用户: ${u.email_account}\n错误: ${e && e.message ? e.message : String(e)}`;
+        try {
+          await _sendFeishuAlertToAdmin(msg);
+        } catch (_) {}
       }
       await _sleep(EMAIL_PULL_USER_DELAY_MS);
     }
