@@ -71,6 +71,26 @@ const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
 // SafetyBot 控制标志
 const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执行日志，不发送text或reaction
 const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
+
+// 特定群组覆盖配置：这些群组将临时禁用 SafetyBot 标志（从环境变量读取，逗号分隔）
+const SAFETYBOT_OVERRIDE_GROUPS = process.env.SAFETYBOT_OVERRIDE_GROUPS 
+  ? process.env.SAFETYBOT_OVERRIDE_GROUPS.split(',').map(g => g.trim())
+  : []; // 从环境变量读取，未配置则为空数组
+
+// 根据群组ID获取 SafetyBot 标志值（支持群组级别的覆盖）
+function getSafetyBotLogOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 LOG_ONLY
+  }
+  return SAFETYBOT_LOG_ONLY;
+}
+
+function getSafetyBotReactionOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 REACTION_ONLY
+  }
+  return SAFETYBOT_REACTION_ONLY;
+}
 // Lark 事件回调配置
 // const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
 const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
@@ -1654,12 +1674,13 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     // 步骤6: 检查是否为空或无效；早返回
     const isImage = msg.type === 'image' || msg.type === 'album';
     const isMedia = isImage || msg.type === 'document';  // 可扩展其他媒体
+    const logOnly = getSafetyBotLogOnly(groupId);
     if (!query.trim() || query === '[未识别内容]') {
-      if (!SAFETYBOT_LOG_ONLY && (!isGroup || shouldReply(msg, BOT_NAME))) {
+      if (!logOnly && (!isGroup || shouldReply(msg, BOT_NAME))) {
         await client.reply(msg.from, '未识别到有效内容。', msg.id);
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
-      } else if (SAFETYBOT_LOG_ONLY) {
+      } else if (logOnly) {
         console.log('[LOG_ONLY模式] 跳过发送"未识别到有效内容"回复');
         appendLog(groupId, '[LOG_ONLY模式] 未识别到有效内容，跳过回复');
       }
@@ -1744,9 +1765,10 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     } catch (e) {
       console.log(`FastGPT 调用失败: ${e.message}`);
       appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-      if (needReply && !SAFETYBOT_LOG_ONLY) {
+      const logOnly = getSafetyBotLogOnly(groupId);
+      if (needReply && !logOnly) {
         await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
-      } else if (needReply && SAFETYBOT_LOG_ONLY) {
+      } else if (needReply && logOnly) {
         console.log('[LOG_ONLY模式] 跳过发送"调用 FastGPT 失败"回复');
         appendLog(groupId, '[LOG_ONLY模式] FastGPT 调用失败，跳过回复');
       }
@@ -1757,7 +1779,9 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     if (needReply) {
       try {
         // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
-        if (SAFETYBOT_LOG_ONLY) {
+        const logOnly = getSafetyBotLogOnly(groupId);
+        const reactionOnly = getSafetyBotReactionOnly(groupId);
+        if (logOnly) {
           console.log('[LOG_ONLY模式] 跳过发送，仅记录日志');
           appendLog(groupId, `[LOG_ONLY模式] FastGPT响应: ${replyStr}`);
           return;
@@ -1795,7 +1819,7 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
           }
           
           // 如果设置了 REACTION_ONLY flag，不发送分段消息
-          if (!SAFETYBOT_REACTION_ONLY) {
+          if (!reactionOnly) {
             // 按顺序发送每条消息
             for (const segment of segments) {
               console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
@@ -1829,13 +1853,13 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
             
             // 只有包含"創建成功"时才发送 reply（如果未设置 REACTION_ONLY）
-            if (hasCreateSuccess && !SAFETYBOT_REACTION_ONLY) {
+            if (hasCreateSuccess && !reactionOnly) {
               console.log(`尝试回复用户: ${replyStr}`);
               appendLog(groupId, `尝试回复用户: ${replyStr}`);
               await client.reply(msg.from, replyStr, msg.id);
               console.log('已回复用户');
               appendLog(groupId, '已回复用户');
-            } else if (hasCreateSuccess && SAFETYBOT_REACTION_ONLY) {
+            } else if (hasCreateSuccess && reactionOnly) {
               console.log('[REACTION_ONLY模式] 跳过发送文本回复');
               appendLog(groupId, '[REACTION_ONLY模式] 跳过发送文本回复');
             }
@@ -1848,20 +1872,20 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
             
             // 如果包含「原始文本與引用文本不一致」，还要回复（如果未设置 REACTION_ONLY）
-            if (replyStr.includes('原始文本與引用文本不一致') && !SAFETYBOT_REACTION_ONLY) {
+            if (replyStr.includes('原始文本與引用文本不一致') && !reactionOnly) {
               const errorReply = '當前項目與引用項目不一致，請保持引用項目和當前檢視或整改項目一致';
               console.log(`尝试回复用户: ${errorReply}`);
               appendLog(groupId, `尝试回复用户: ${errorReply}`);
               await client.reply(msg.from, errorReply, msg.id);
               console.log('已回复用户');
               appendLog(groupId, '已回复用户');
-            } else if (replyStr.includes('原始文本與引用文本不一致') && SAFETYBOT_REACTION_ONLY) {
+            } else if (replyStr.includes('原始文本與引用文本不一致') && reactionOnly) {
               console.log('[REACTION_ONLY模式] 跳过发送错误提示文本');
               appendLog(groupId, '[REACTION_ONLY模式] 跳过发送错误提示文本');
             }
           } else {
             // 其他情况使用 reply（如果未设置 REACTION_ONLY）
-            if (!SAFETYBOT_REACTION_ONLY) {
+            if (!reactionOnly) {
               console.log(`尝试回复用户: ${replyStr}`);
               appendLog(groupId, `尝试回复用户: ${replyStr}`);
               await client.reply(msg.from, replyStr, msg.id);
@@ -2084,7 +2108,8 @@ async function handlePastSummary(client, groupId) {
     if (replyStr) {
       try {
         // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
-        if (SAFETYBOT_LOG_ONLY) {
+        const logOnly = getSafetyBotLogOnly(groupId);
+        if (logOnly) {
           console.log('[LOG_ONLY模式] 跳过发送往日總結，仅记录日志');
           appendLog(groupId, `[LOG_ONLY模式] 往日總結内容: ${replyStr}`);
           return;
@@ -2193,7 +2218,8 @@ async function handleTodaySummary(client, groupId) {
     if (replyStr) {
       try {
         // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
-        if (SAFETYBOT_LOG_ONLY) {
+        const logOnly = getSafetyBotLogOnly(groupId);
+        if (logOnly) {
           console.log('[LOG_ONLY模式] 跳过发送今日總結，仅记录日志');
           appendLog(groupId, `[LOG_ONLY模式] 今日總結内容: ${replyStr}`);
           return;
