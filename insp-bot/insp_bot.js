@@ -69,6 +69,9 @@ const PLAN_FASTGPT_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completion
 const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
 const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
 const GROUP_FILES_API_URL = process.env.GROUP_FILES_API_URL || '';
+
+// AdminGroups：避免 cron 叠加并发（上一轮未结束下一轮又启动）
+let _adminGroupsDownloadRunning = false;
 // SafetyBot 控制标志
 const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执行日志，不发送text或reaction
 const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
@@ -1149,6 +1152,9 @@ async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDi
 async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
   const dateISO = isoDateInTZ('Asia/Hong_Kong');
   appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
+  const t0 = Date.now();
+  console.log(`[AdminGroupFiles] step=begin group=${adminGroupId} label=${whenLabel} date=${dateISO}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=begin group=${adminGroupId} label=${whenLabel} date=${dateISO}`);
 
   // 配置缺失时直接跳过，避免定时任务持续报错刷屏
   if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
@@ -1158,9 +1164,13 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
     return null;
   }
 
+  console.log(`[AdminGroupFiles] step=fetchLatestRecord group=${adminGroupId}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=fetchLatestRecord group=${adminGroupId}`);
   const rec = await fetchLatestGroupFileRecord(adminGroupId, dateISO);
   if (!rec) {
     appendLog(adminGroupId, `[AdminGroupFiles] 未找到当日文件: group_id=${adminGroupId}, date=${dateISO}`);
+    console.log(`[AdminGroupFiles] step=noRecord group=${adminGroupId} ms=${Date.now() - t0}`);
+    appendLog(adminGroupId, `[AdminGroupFiles] step=noRecord group=${adminGroupId} ms=${Date.now() - t0}`);
     return null;
   }
 
@@ -1170,9 +1180,13 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
 
   if (!fileToken) {
     appendLog(adminGroupId, `[AdminGroupFiles] 记录缺少 file_url(file_token): ${JSON.stringify(rec)}`);
+    console.log(`[AdminGroupFiles] step=badRecordMissingToken group=${adminGroupId} ms=${Date.now() - t0}`);
+    appendLog(adminGroupId, `[AdminGroupFiles] step=badRecordMissingToken group=${adminGroupId} ms=${Date.now() - t0}`);
     return null;
   }
 
+  console.log(`[AdminGroupFiles] step=downloadFromFeishu group=${adminGroupId} token=${String(fileToken).slice(0, 12)}...`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=downloadFromFeishu group=${adminGroupId} token=${String(fileToken).slice(0, 12)}...`);
   const saveDir = path.join(TMP_DIR, 'admin_group_files', safeFilename(adminGroupId), dateISO);
   const dl = await downloadFeishuMediaToLocal({
     fileToken,
@@ -1185,6 +1199,9 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
     `[AdminGroupFiles] 下载成功: token=${fileToken}, createdAt=${createdAt}, name=${fileName} => ${dl.outPath} (${dl.bytes} bytes, ${dl.contentType})`
   );
   console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
+  appendLog(adminGroupId, `[AdminGroupFiles] 下载成功: outPath=${dl.outPath} bytes=${dl.bytes} contentType=${dl.contentType}`);
+  console.log(`[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
   return { record: rec, download: dl };
 }
 
