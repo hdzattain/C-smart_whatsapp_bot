@@ -37,6 +37,16 @@ const EMAIL_PULL_UNREAD_ONLY = (process.env.EMAIL_PULL_UNREAD_ONLY || 'true').to
 const EMAIL_PULL_TODAY_ONLY = (process.env.EMAIL_PULL_TODAY_ONLY || 'true').toLowerCase() !== 'false';
 const EMAIL_MAILBOX = process.env.EMAIL_MAILBOX || 'inbox';
 const EMAIL_FINAL_MAX_BYTES = Number.parseInt(process.env.EMAIL_FINAL_MAX_BYTES || String(140 * 1024), 10); // 140KB
+const EMAIL_PULL_USER_DELAY_MS = Number.parseInt(process.env.EMAIL_PULL_USER_DELAY_MS || '800', 10);
+
+// 用于解密 email_accounts.encrypted_password（Python 端用 cryptography.Fernet）
+const EMAIL_ENCRYPTION_KEY = process.env.EMAIL_ENCRYPTION_KEY || '';
+// 可选：内部接口 token（Python 端：EMAIL_ACCOUNTS_CREDENTIALS_TOKEN）
+const EMAIL_ACCOUNTS_CREDENTIALS_TOKEN = process.env.EMAIL_ACCOUNTS_CREDENTIALS_TOKEN || '';
+// IMAP 连接参数（Node 端直连 IMAP，不再依赖 /mail/receive 接口）
+const IMAP_SERVER = process.env.IMAP_SERVER || process.env.DEFAULT_IMAP_SERVER || 'owahk.cohl.com';
+const IMAP_PORT = Number.parseInt(process.env.IMAP_PORT || process.env.DEFAULT_IMAP_PORT || '993', 10);
+const IMAP_SECURE = (process.env.IMAP_SECURE || 'true').toLowerCase() !== 'false';
 
 let emailPullRunning = false;
 let emailProcessRunning = false;
@@ -75,6 +85,15 @@ function _hkDateStr(dateObj = new Date()) {
   return fmt.format(dateObj); // YYYY-MM-DD
 }
 
+function _hkMidnightDate(dateObj = new Date()) {
+  // 返回 “香港当天 00:00:00” 对应的 Date（用于 IMAP SEARCH SINCE）
+  // 通过格式化 YYYY-MM-DD 再拼回 Date，避免手写时区换算
+  const dateStr = _hkDateStr(dateObj); // YYYY-MM-DD
+  const [y, m, d] = dateStr.split('-').map(x => Number.parseInt(x, 10));
+  // 这里构造的是本地时区 Date，但后续只是用于 IMAP 的 “日期” 搜索（无时分秒），已足够
+  return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
+}
+
 function _hkTimeHHmm0(dateObj = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: TASK_TIMEZONE || 'Asia/Hong_Kong',
@@ -97,6 +116,63 @@ function _parseMailDate(dateStr) {
 
 function _byteLenUtf8(s) {
   return Buffer.byteLength(_safeStr(s), 'utf8');
+}
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function _b64urlToBuf(s) {
+  const raw = _safeStr(s).replace(/-/g, '+').replace(/_/g, '/');
+  const padLen = (4 - (raw.length % 4)) % 4;
+  const padded = raw + '='.repeat(padLen);
+  return Buffer.from(padded, 'base64');
+}
+
+function _normalizeFernetKeyTo32Bytes(keyStr) {
+  if (!keyStr) throw new Error('缺少配置：EMAIL_ENCRYPTION_KEY（用于解密 encrypted_password）');
+  // Python 端支持两种：本身是 base64url key；或是 raw string（会先 base64url encode）
+  // 这里按 Fernet 规范：最终必须是 32 bytes key material（base64url decode 后长度为 32）
+  try {
+    const buf = _b64urlToBuf(keyStr);
+    if (buf.length === 32) return buf;
+  } catch (_) {}
+  // 退一步：把字符串当作 raw bytes，再 base64url encode 再 decode（等价于 Python 的兜底）
+  const rawBytes = Buffer.from(String(keyStr), 'utf8');
+  const b64 = rawBytes.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const buf2 = _b64urlToBuf(b64);
+  if (buf2.length !== 32) {
+    throw new Error('EMAIL_ENCRYPTION_KEY 格式不正确（Fernet key 解码后必须是 32 bytes）');
+  }
+  return buf2;
+}
+
+function _fernetDecrypt(token, keyStr) {
+  const key = _normalizeFernetKeyTo32Bytes(keyStr);
+  const signingKey = key.subarray(0, 16);
+  const encryptionKey = key.subarray(16, 32);
+
+  const data = _b64urlToBuf(token);
+  if (data.length < 1 + 8 + 16 + 32) throw new Error('Fernet token 太短');
+  const version = data[0];
+  if (version !== 0x80) throw new Error('Fernet token 版本不支持');
+
+  // 结构：0x80 | ts(8) | iv(16) | ciphertext(...) | hmac(32)
+  const hmacStart = data.length - 32;
+  const signed = data.subarray(0, hmacStart);
+  const mac = data.subarray(hmacStart);
+
+  const mac2 = crypto.createHmac('sha256', signingKey).update(signed).digest();
+  if (mac.length !== mac2.length || !crypto.timingSafeEqual(mac, mac2)) {
+    throw new Error('Fernet HMAC 校验失败（密钥不匹配或数据损坏）');
+  }
+
+  const iv = data.subarray(1 + 8, 1 + 8 + 16);
+  const ciphertext = data.subarray(1 + 8 + 16, hmacStart);
+  const decipher = crypto.createDecipheriv('aes-128-cbc', encryptionKey, iv);
+  decipher.setAutoPadding(true);
+  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return plain.toString('utf8');
 }
 
 function _makeContentLineFromText(partText) {
@@ -136,28 +212,127 @@ function _getUserDateDirs(emailAccount, dateStr) {
 
 async function _fetchEmailsFromMailApi(emailAccount) {
   if (!API_BASE_URL) throw new Error('缺少配置：API_BASE_URL');
-  const url = `${API_BASE_URL}/mail/receive_from_db`;
-  const body = {
-    email_account: emailAccount,
-    receive_number: Number.isFinite(EMAIL_PULL_RECEIVE_NUMBER) ? EMAIL_PULL_RECEIVE_NUMBER : 50,
-    unread_only: EMAIL_PULL_UNREAD_ONLY,
-    today_only: EMAIL_PULL_TODAY_ONLY,
-    mailbox: EMAIL_MAILBOX
-  };
-  const resp = await axios.post(url, body, { timeout: 60000 });
-  const data = resp.data || {};
-
-  // 兼容两种返回：/mail/receive -> {result:[]}; /mail/receive_from_db -> {results:[{result:[]}]}
-  if (Array.isArray(data.result)) return data.result;
-  if (Array.isArray(data.results)) {
-    const row = data.results.find(r => r && r.email_account === emailAccount) || data.results[0];
-    if (row && Array.isArray(row.result)) return row.result;
-  }
-  return [];
+  throw new Error('_fetchEmailsFromMailApi 已废弃：请使用 _fetchEmailsFromMailApiWithPassword');
 }
 
-async function pullEmailsToDiskForUser(emailAccount) {
-  const mails = await _fetchEmailsFromMailApi(emailAccount);
+async function _fetchEmailsFromMailApiWithPassword(emailAccount, emailPassword) {
+  // 已不再使用：需求改为 Node 直连 IMAP（不靠 /mail/receive 接口）
+  throw new Error('_fetchEmailsFromMailApiWithPassword 已废弃：请使用 _fetchEmailsViaImap');
+}
+
+async function loadUsersWithCredentialsFromAPI() {
+  if (!API_BASE_URL) throw new Error('缺少配置：API_BASE_URL');
+  const url = `${API_BASE_URL}/email_accounts/credentials`;
+  const headers = {};
+  if (EMAIL_ACCOUNTS_CREDENTIALS_TOKEN) {
+    headers['Authorization'] = `Bearer ${EMAIL_ACCOUNTS_CREDENTIALS_TOKEN}`;
+  }
+  const resp = await axios.post(url, {}, { timeout: 30000, headers });
+  const data = resp.data || {};
+  const rows = Array.isArray(data.results) ? data.results : [];
+
+  const out = [];
+  for (const r of rows) {
+    const acc = _safeStr(r?.email_account).trim();
+    const enc = _safeStr(r?.encrypted_password).trim();
+    if (!acc || !enc) continue;
+    try {
+      const pwd = _fernetDecrypt(enc, EMAIL_ENCRYPTION_KEY);
+      out.push({ email_account: acc, email_password: pwd });
+    } catch (e) {
+      console.error('[配置][credentials] 解密失败:', acc, e && e.message ? e.message : e);
+    }
+  }
+  console.log(`[配置] 从 credentials API 加载了 ${out.length} 个可用账号（解密成功）`);
+  return out;
+}
+
+async function _fetchEmailsViaImap(emailAccount, emailPassword) {
+  if (!emailAccount) throw new Error('缺少参数：emailAccount');
+  if (!emailPassword) throw new Error('缺少参数：emailPassword');
+  if (!IMAP_SERVER) throw new Error('缺少配置：IMAP_SERVER');
+  if (!IMAP_PORT) throw new Error('缺少配置：IMAP_PORT');
+
+  let ImapFlow, simpleParser;
+  try {
+    ({ ImapFlow } = require('imapflow'));
+    ({ simpleParser } = require('mailparser'));
+  } catch (e) {
+    throw new Error('缺少依赖：请安装 imapflow 与 mailparser（在启动目录执行 npm i imapflow mailparser）');
+  }
+
+  const client = new ImapFlow({
+    host: IMAP_SERVER,
+    port: IMAP_PORT,
+    secure: IMAP_SECURE,
+    auth: {
+      user: emailAccount,
+      pass: emailPassword
+    }
+  });
+
+  const receiveNumber = Number.isFinite(EMAIL_PULL_RECEIVE_NUMBER) ? EMAIL_PULL_RECEIVE_NUMBER : 50;
+  const mailbox = EMAIL_MAILBOX || 'inbox';
+
+  await client.connect();
+  const lock = await client.getMailboxLock(mailbox);
+  try {
+    const search = [];
+    search.push(EMAIL_PULL_UNREAD_ONLY ? 'UNSEEN' : 'ALL');
+
+    // 尽量用服务器侧过滤减少数据量；同时保留客户端二次过滤兜底
+    if (EMAIL_PULL_TODAY_ONLY) {
+      const hk0 = _hkMidnightDate(new Date());
+      search.push(['SINCE', hk0]);
+    }
+
+    let uids = await client.search(search);
+    if (!Array.isArray(uids) || uids.length === 0) return [];
+    uids.sort((a, b) => a - b);
+    const picked = uids.slice(-receiveNumber);
+
+    const out = [];
+    for await (const msg of client.fetch(picked, { uid: true, envelope: true, internalDate: true, source: true })) {
+      let parsed;
+      try {
+        parsed = await simpleParser(msg.source);
+      } catch (_) {
+        parsed = null;
+      }
+
+      const subject = _safeStr(parsed?.subject || msg?.envelope?.subject || '');
+      const from = _safeStr(parsed?.from?.text || '');
+      const dt = parsed?.date instanceof Date ? parsed.date : (msg?.internalDate instanceof Date ? msg.internalDate : new Date());
+      const dateIso = dt.toISOString();
+      const body = _safeStr(parsed?.text || parsed?.html || '');
+
+      // today_only 二次过滤（香港日期）
+      if (EMAIL_PULL_TODAY_ONLY) {
+        const d1 = _hkDateStr(dt);
+        const d0 = _hkDateStr(new Date());
+        if (d1 !== d0) continue;
+      }
+
+      out.push({
+        id: String(msg.uid),
+        subject,
+        from,
+        date: dateIso,
+        body
+      });
+    }
+
+    // 返回按 UID 倒序（新→旧），更贴近“最新 50 封”
+    out.sort((a, b) => (Number.parseInt(b.id, 10) || 0) - (Number.parseInt(a.id, 10) || 0));
+    return out;
+  } finally {
+    try { lock.release(); } catch (_) {}
+    try { await client.logout(); } catch (_) {}
+  }
+}
+
+async function pullEmailsToDiskForUser(emailAccount, emailPassword) {
+  const mails = await _fetchEmailsViaImap(emailAccount, emailPassword);
   if (!mails || mails.length === 0) return { saved: 0, skipped: 0 };
 
   let saved = 0;
@@ -405,15 +580,20 @@ async function runEmailPipelinePull() {
   }
   emailPullRunning = true;
   try {
-    const users = await loadUsersFromAPI();
+    const users = await loadUsersWithCredentialsFromAPI();
     if (!users || users.length === 0) return;
-    const results = await Promise.all(
-      users.map(u => pullEmailsToDiskForUser(u.email_account).catch(e => {
+
+    // “慢慢读取”：按用户串行执行，避免并发 IMAP 抢占/触发服务端限流
+    let totalSaved = 0;
+    for (const u of users) {
+      try {
+        const r = await pullEmailsToDiskForUser(u.email_account, u.email_password);
+        totalSaved += (r.saved || 0);
+      } catch (e) {
         console.error('[emails][pull] 用户失败:', u.email_account, e && e.message ? e.message : e);
-        return { saved: 0, skipped: 0 };
-      }))
-    );
-    const totalSaved = results.reduce((s, r) => s + (r.saved || 0), 0);
+      }
+      await _sleep(EMAIL_PULL_USER_DELAY_MS);
+    }
     console.log(`[emails][pull] 完成：写入 ${totalSaved} 封（去重跳过不计入）`);
   } finally {
     emailPullRunning = false;
