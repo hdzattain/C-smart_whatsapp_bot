@@ -3114,7 +3114,8 @@ function start(client) {
   // 如果服务器是 UTC，17:00 HKT = 09:00 UTC；如果服务器是 HKT，直接使用 17:00
   cron.schedule('0 17 * * *', async () => {
     console.log('[定时任务] 开始执行 17:00 AI 进度更新（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressUpdate(client, groupId);
     }
   }, {
@@ -3126,7 +3127,8 @@ function start(client) {
 
   cron.schedule('00 22 * * *', async () => {
     console.log('[定时任务] 开始执行 22:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressSummary(client, groupId);
     }
   }, {
@@ -3135,7 +3137,8 @@ function start(client) {
 
   cron.schedule('00 20 * * *', async () => {
     console.log('[定时任务] 开始执行 20:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressSummary(client, groupId);
     }
   }, {
@@ -3152,24 +3155,6 @@ function start(client) {
     timezone: 'Asia/Hong_Kong'
   });
 
-  // 今天特殊定时任务：下午3点 AI 进度更新，下午4点 AI 进度总结
-  cron.schedule('0 15 * * *', async () => {
-    console.log('[特殊定时任务] 今天 15:00 AI 进度更新（香港时区）');
-    for (const groupId of targetGroups) {
-      await handleProgressUpdate(client, groupId);
-    }
-  }, {
-    timezone: 'Asia/Hong_Kong'
-  });
-
-  cron.schedule('0 16 * * *', async () => {
-    console.log('[特殊定时任务] 今天 16:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
-      await handleProgressSummary(client, groupId);
-    }
-  }, {
-    timezone: 'Asia/Hong_Kong'
-  });
 
   // 总结目标群组（往日总结和今日总结共用）
   const summaryGroups = process.env.SAFETYBOT_GROUPS
