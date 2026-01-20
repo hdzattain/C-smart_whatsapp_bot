@@ -41,6 +41,15 @@ const EMAIL_MAILBOX = process.env.EMAIL_MAILBOX || 'inbox';
 const EMAIL_FINAL_MAX_BYTES = Number.parseInt(process.env.EMAIL_FINAL_MAX_BYTES || String(140 * 1024), 10); // 140KB
 const EMAIL_PULL_USER_DELAY_MS = Number.parseInt(process.env.EMAIL_PULL_USER_DELAY_MS || '800', 10);
 
+// txt_result 生成并发（参考 fastgpt_client.py 的 MAX_WORKERS 思路）
+const EMAIL_FASTGPT_MAX_WORKERS = (() => {
+  const v = Number.parseInt(process.env.EMAIL_FASTGPT_MAX_WORKERS || '6', 10);
+  // 兜底范围：1~50
+  if (!Number.isFinite(v) || v < 1) return 1;
+  if (v > 50) return 50;
+  return v;
+})();
+
 // 用于解密 email_accounts.encrypted_password（Python 端用 cryptography.Fernet）
 const EMAIL_ENCRYPTION_KEY = process.env.EMAIL_ENCRYPTION_KEY || '';
 // 可选：内部接口 token（Python 端：EMAIL_ACCOUNTS_CREDENTIALS_TOKEN）
@@ -125,6 +134,32 @@ function _byteLenUtf8(s) {
 
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function _asyncPool(limit, items, iteratorFn) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const concurrency = Math.max(1, Number.isFinite(limit) ? limit : 1);
+  const ret = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      try {
+        ret[i] = await iteratorFn(items[i], i);
+      } catch (e) {
+        ret[i] = { __error: e };
+      }
+    }
+  };
+
+  const workers = [];
+  for (let i = 0; i < Math.min(concurrency, items.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return ret;
 }
 
 function _b64urlToBuf(s) {
@@ -477,11 +512,21 @@ async function generateTxtResultsForUserDate(emailAccount, dateStr) {
   let generated = 0;
   let skipped = 0;
 
+  const tasks = [];
   for (const [id, meta] of chosen.entries()) {
     if (doneIds.has(id)) {
       skipped += 1;
       continue;
     }
+    tasks.push({ id, meta });
+  }
+
+  if (tasks.length === 0) return { generated, skipped };
+
+  console.log(`[txt_result] 并发生成：user=${emailAccount}, date=${dateStr}, tasks=${tasks.length}, workers=${EMAIL_FASTGPT_MAX_WORKERS}`);
+
+  const results = await _asyncPool(EMAIL_FASTGPT_MAX_WORKERS, tasks, async (t) => {
+    const { id, meta } = t;
 
     let mailObj;
     try {
@@ -489,7 +534,7 @@ async function generateTxtResultsForUserDate(emailAccount, dateStr) {
       mailObj = JSON.parse(raw);
     } catch (e) {
       console.error('[txt_result] 读取/解析 JSON 失败:', meta.filePath, e && e.message ? e.message : e);
-      continue;
+      return { id, ok: false, reason: 'json_parse' };
     }
 
     const randomChatId = generateRandomChatId();
@@ -515,10 +560,17 @@ async function generateTxtResultsForUserDate(emailAccount, dateStr) {
       });
       const outPath = path.join(txtDir, `${meta.baseName}.txt`);
       fs.writeFileSync(outPath, content, { encoding: 'utf8' });
-      doneIds.add(id);
-      generated += 1;
+      return { id, ok: true };
     } catch (e) {
       console.error('[txt_result] FastGPT 调用失败:', emailAccount, id, e && e.message ? e.message : e);
+      return { id, ok: false, reason: 'fastgpt_call' };
+    }
+  });
+
+  for (const r of results) {
+    if (r && r.ok) {
+      doneIds.add(String(r.id));
+      generated += 1;
     }
   }
 
