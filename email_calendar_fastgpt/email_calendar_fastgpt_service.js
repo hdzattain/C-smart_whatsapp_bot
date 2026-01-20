@@ -34,6 +34,7 @@ const EMAIL_DATA_DIR = process.env.EMAIL_DATA_DIR
 const EMAIL_PULL_CRON = process.env.EMAIL_PULL_CRON || '*/5 * * * *';
 const EMAIL_PROCESS_CRON = process.env.EMAIL_PROCESS_CRON || '*/5 * * * *';
 const EMAIL_BUILD_CRON = process.env.EMAIL_BUILD_CRON || '*/5 * * * *';
+const EMAIL_SUMMARY_SEND_CRON = process.env.EMAIL_SUMMARY_SEND_CRON || '*/15 * * * *'; // 每天12点和18点
 const EMAIL_PULL_RECEIVE_NUMBER = Number.parseInt(process.env.EMAIL_PULL_RECEIVE_NUMBER || '50', 10);
 const EMAIL_PULL_UNREAD_ONLY = (process.env.EMAIL_PULL_UNREAD_ONLY || 'true').toLowerCase() !== 'false';
 const EMAIL_PULL_TODAY_ONLY = (process.env.EMAIL_PULL_TODAY_ONLY || 'true').toLowerCase() !== 'false';
@@ -65,6 +66,7 @@ const IMAP_SECURE = (process.env.IMAP_SECURE || 'true').toLowerCase() !== 'false
 let emailPullRunning = false;
 let emailProcessRunning = false;
 let emailBuildRunning = false;
+let emailSummarySendRunning = false;
 
 function _safeStr(x) {
   return (x === null || x === undefined) ? '' : String(x);
@@ -219,6 +221,112 @@ function _makeContentLineFromText(partText) {
   const contentString = JSON.stringify({ text: partText }, null, 0);
   // 输出只保留 `"content": "..."`，不包含外层 `{ }`
   return `"content": ${JSON.stringify(contentString)}`;
+}
+
+// 发送每日摘要到飞书：每个 part 一条消息，按 part_1, part_2... 顺序
+async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
+  if (!Array.isArray(parts) || parts.length === 0) return;
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
+    console.warn('[飞书] 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，跳过发送每日摘要');
+    return;
+  }
+  // const targetEmail = emailAccount;
+  const targetEmail = process.env.EMAIL_SUMMARY_FEISHU_EMAIL || 'yilin.wu02@cohl.com';
+
+  // 为发送摘要单独创建一个客户端（自动管理 token）
+  const client = new Lark.Client({
+    appId: FEISHU_APP_ID,
+    appSecret: FEISHU_APP_SECRET,
+    disableTokenCache: false
+  });
+
+  let idx = 1;
+  for (const text of parts) {
+    if (!text || typeof text !== 'string') {
+      idx += 1;
+      continue;
+    }
+    const content = JSON.stringify({ text });
+    try {
+      await client.im.v1.message.create({
+        params: {
+          receive_id_type: 'email'
+        },
+        data: {
+          receive_id: targetEmail,
+          msg_type: 'text',
+          content
+        }
+      });
+      console.log(`[飞书] 已发送每日摘要 part_${idx} 给 ${targetEmail}（用户: ${emailAccount}, 日期: ${dateStr}）`);
+    } catch (e) {
+      console.error('[飞书] 发送每日摘要失败:', emailAccount, dateStr, `part_${idx}`, e && e.message ? e.message : e);
+    }
+    idx += 1;
+  }
+}
+
+// 从 final_result/part_*.txt 文件读取并发送每日摘要
+async function _sendFeishuSummaryFromFiles(emailAccount, dateStr) {
+  const { finalDir } = _getUserDateDirs(emailAccount, dateStr);
+  if (!fs.existsSync(finalDir)) {
+    console.log(`[飞书发送] 目录不存在，跳过: ${finalDir}`);
+    return;
+  }
+
+  // 读取所有 part_*.txt 文件，按数字排序
+  const partFiles = [];
+  try {
+    for (const fn of fs.readdirSync(finalDir)) {
+      const m = fn.match(/^part_(\d+)\.txt$/i);
+      if (m) {
+        const num = Number.parseInt(m[1], 10);
+        partFiles.push({ num, path: path.join(finalDir, fn) });
+      }
+    }
+  } catch (e) {
+    console.error('[飞书发送] 读取 finalDir 失败:', finalDir, e && e.message ? e.message : e);
+    return;
+  }
+
+  if (partFiles.length === 0) {
+    console.log(`[飞书发送] 未找到 part_*.txt 文件: ${finalDir}`);
+    return;
+  }
+
+  partFiles.sort((a, b) => a.num - b.num);
+
+  // 解析每个文件，提取文本内容
+  const parts = [];
+  for (const { num, path: filePath } of partFiles) {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8').trim();
+      // part_*.txt 格式: "content": "{\"text\":\"...\"}"
+      // 需要解析出实际的文本内容
+      if (raw.startsWith('"content":')) {
+        const jsonStr = raw.replace(/^"content":\s*/, '').trim();
+        const contentObj = JSON.parse(jsonStr);
+        if (contentObj && typeof contentObj.text === 'string') {
+          parts.push(contentObj.text);
+        } else {
+          console.warn(`[飞书发送] part_${num}.txt 格式异常，跳过: ${filePath}`);
+        }
+      } else {
+        // 兜底：直接当作纯文本
+        parts.push(raw);
+      }
+    } catch (e) {
+      console.error(`[飞书发送] 读取/解析 part_${num}.txt 失败:`, filePath, e && e.message ? e.message : e);
+    }
+  }
+
+  if (parts.length === 0) {
+    console.log(`[飞书发送] 未解析到有效内容: ${finalDir}`);
+    return;
+  }
+
+  // 调用发送函数
+  await _sendFeishuSummaryParts(emailAccount, dateStr, parts);
 }
 
 function _extractPluginOutputFromFastGPTContent(rawText) {
@@ -735,10 +843,34 @@ async function runEmailPipelineBuildFinal() {
   }
 }
 
+async function runEmailPipelineSendSummary() {
+  if (emailSummarySendRunning) {
+    console.warn('[emails][summary_send] 上一次仍在运行，跳过本轮');
+    return;
+  }
+  emailSummarySendRunning = true;
+  try {
+    const users = await loadUsersFromAPI();
+    if (!users || users.length === 0) return;
+    const dateStr = _hkDateStr(new Date());
+    for (const u of users) {
+      try {
+        await _sendFeishuSummaryFromFiles(u.email_account, dateStr);
+      } catch (e) {
+        console.error('[emails][summary_send] 用户失败:', u.email_account, e && e.message ? e.message : e);
+      }
+    }
+    console.log(`[emails][summary_send] 完成（日期: ${dateStr}）`);
+  } finally {
+    emailSummarySendRunning = false;
+  }
+}
+
 function startEmailPipelineTasks() {
   console.log('[emails] 启动邮件前置任务...');
   console.log(`[emails] EMAIL_DATA_DIR=${EMAIL_DATA_DIR}`);
   console.log(`[emails] pull cron=${EMAIL_PULL_CRON}, process cron=${EMAIL_PROCESS_CRON}, build cron=${EMAIL_BUILD_CRON}`);
+  console.log(`[emails] summary send cron=${EMAIL_SUMMARY_SEND_CRON}`);
   console.log(`[emails] final max bytes=${EMAIL_FINAL_MAX_BYTES}`);
 
   const options = TASK_TIMEZONE ? { timezone: TASK_TIMEZONE } : {};
@@ -753,6 +885,10 @@ function startEmailPipelineTasks() {
 
   cron.schedule(EMAIL_BUILD_CRON, async () => {
     await runEmailPipelineBuildFinal();
+  }, options);
+
+  cron.schedule(EMAIL_SUMMARY_SEND_CRON, async () => {
+    await runEmailPipelineSendSummary();
   }, options);
 
   console.log('[emails] 邮件前置任务已注册');
@@ -820,12 +956,12 @@ const TASK_TYPES = [
   //   schedule: process.env.FASTGPT_CRON_SCHEDULE_EARLY || '50 11,17 * * *',
   //   query: process.env.FASTGPT_QUERY_SCHEDULE || '定时自动加日程'
   // },
-  {
-    name: '定时自动总结',
-    // 总结任务：12点和18点执行
-    schedule: process.env.FASTGPT_CRON_SUMMARY || '59 13,17 * * *',
-    query: process.env.FASTGPT_QUERY_SUMMARY || '定时自动总结'
-  }
+  // {
+  //   name: '定时自动总结',
+  //   // 总结任务：12点和18点执行
+  //   schedule: process.env.FASTGPT_CRON_SUMMARY || '59 13,17 * * *',
+  //   query: process.env.FASTGPT_QUERY_SUMMARY || '定时自动总结'
+  // }
 ];
 
 // 为单个用户执行任务
