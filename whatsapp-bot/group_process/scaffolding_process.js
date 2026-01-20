@@ -277,6 +277,18 @@ async function processScaffoldingQuery(query, groupId, contactPhone) {
     return "未匹配到工作流";
   }
 
+  // 忽略纯图片消息
+  if (query.includes('[图片]')) {
+    await logOperationToCsvIfTargetGroup({
+      query: originalQuery,
+      category: '未知',
+      groupId,
+      success: false,
+      errorMsg: '未匹配到工作流'
+    });
+    return "未匹配到工作流";
+  }
+
   const firstThree = getFirstThreeLines(query);
   const appId = extractApplicationId(firstThree);
 

@@ -1,8 +1,10 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const wppconnect = require('@wppconnect-team/wppconnect');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs-extra');
+const fs_2 = require('fs');
+const fsPromises = fs_2.promises
 const path = require('path');
 const FormData = require('form-data');
 const mime = require('mime-types');
@@ -30,11 +32,11 @@ const {
 } = require('./group_constants');
 
 
-const DIFY_API_KEY  = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
+const DIFY_API_KEY = 'app-A18jsyMNjlX3rhCDJ9P4xl6z';
 const DIFY_BASE_URL = process.env.DIFY_BASE_URL || 'https://api.dify.ai/v1';
 const FASTGPT_API_URL = 'http://43.154.37.138:3008/api/v1/chat/completions';
 const FASTGPT_API_KEY = 'fastgpt-uhlgWY5Lsti1X4msKMzDHheQ4AAEH4hfzr7fczsBA5nA14HEwF7AZ2Nua234Khai';
-const BOT_NAME      = process.env.BOT_NAME || 'C-SMART'; // 机器人昵称
+const BOT_NAME = process.env.BOT_NAME || 'C-SMART'; // 机器人昵称
 
 const TIME_SEGMENTS = [
   { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
@@ -107,7 +109,7 @@ const GROUP_FORMATS = {
 };
 
 
-const TMP_DIR  = path.join(__dirname, 'tmp');
+const TMP_DIR = path.join(__dirname, 'tmp');
 fs.ensureDirSync(TMP_DIR);
 
 // === 健康检查状态 ===
@@ -121,7 +123,7 @@ app.listen(3060, () => {
 });
 
 const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
-const LOG_DIR  = path.join(__dirname, 'logs');
+const LOG_DIR = path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'whatsapp.log');
 fs.ensureDirSync(LOG_DIR);
 
@@ -151,34 +153,46 @@ function toEmojiId(appId) {
   return `${letter}${emojiNum}`;
 }
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: 'whatsapp-bot-session',
-    dataPath: path.join(__dirname, '.wwebjs_auth')
-  }),
-  puppeteer: {
+// —— WPPConnect 初始化 ——
+let client;
+
+wppconnect.create({
+  session: 'whatsapp-bot-session',
+  catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
+    console.log('请扫描二维码登录 WhatsApp');
+    qrcode.generate(urlCode, { small: true });
+    appendLog('default', '请扫描二维码登录 WhatsApp');
+    state.status = 'QR_NEEDED';
+  },
+  logQR: false,
+  headless: true,
+  puppeteerOptions: {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   }
-});
+})
+  .then((clientInstance) => {
+    client = clientInstance;
+    state.status = 'READY';
+    console.log('WhatsApp 机器人已启动');
+    appendLog('default', 'WhatsApp 机器人已启动');
 
-client.on('qr', qr => {
-  state.status = 'QR_NEEDED';
-  qrcode.generate(qr, { small: true });
-  console.log('请扫描二维码登录 WhatsApp');
-  appendLog('default', '请扫描二维码登录 WhatsApp');
-});
+    // 设置消息监听
+    client.onMessage(async (msg) => {
+      await handleMessage(msg);
+    });
+  })
+  .catch((error) => {
+    console.error('初始化失败:', error);
+    state.status = 'DISCONNECTED';
+    appendLog('default', `初始化失败: ${error.message}`);
+  });
 
-client.on('ready', () => {
-  state.status = 'READY';
-  console.log('WhatsApp 机器人已启动');
-  appendLog('default', 'WhatsApp 机器人已启动');
-});
-
-client.on('disconnected', (reason) => {
-  state.status = 'DISCONNECTED';
-  console.error('Bot Disconnected:', reason);
-  appendLog('default', `Bot Disconnected: ${reason}`);
-  process.exit(1); // 触发 systemd 重启重连
+// 监听断开连接事件
+process.on('SIGINT', () => {
+  if (client) {
+    client.close();
+  }
+  process.exit(0);
 });
 
 // —— 关键词检测 ——
@@ -447,12 +461,12 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
     const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
     // 提取楼栋字母（A座 -> A, B座 -> B, 未知 -> 空字符串）
     const buildingLetter = building === '未知' ? '' : building.replace('座', '');
-    
+
     const buildingDetails = sortedRecords.map((rec, index) => {
       const updateHistory = parseUpdateHistory(rec.update_history);
       const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
       const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
-      
+
       prefix = toEmojiId(rec.application_id || '??') + '-';
 
       const fields = {
@@ -585,50 +599,53 @@ function shouldReply(msg, botName) {
     const text = (msg.body || '').trim();
     // WhatsApp 群聊 @ 机器人的格式为 @昵称 或带群内 mention
     const mention = msg.mentionedIds && msg.mentionedIds.includes(msg.to); // @机器人id
-    const atName  = text.includes(`@${botName}`); // @昵称
-    const withAi  = text.startsWith('/ai') || text.startsWith('ai ');
+    const atName = text.includes(`@${botName}`); // @昵称
+    const withAi = text.startsWith('/ai') || text.startsWith('ai ');
 
     return mention || atName || withAi;
   }
   return true; // 私聊，默认都回复
 }
-client.on('message', async msg => {
+
+/**
+ * 尝试从客户端获取发送者的电话号码
+ */
+async function getSenderPhoneNumber(client, authorId) {
+  let contactPhone = '';
+  try {
+    const info = await client.getPnLidEntry(authorId);
+    if (info && info.phoneNumber) {
+      contactPhone = info.phoneNumber.id ? info.phoneNumber.id.replace('@c.us', '') : '';
+    }
+  } catch (contactError) {
+    console.log('获取发送人联系信息失败:', contactError.message);
+  }
+  return contactPhone;
+}
+async function handleMessage(msg) {
   try {
     const user = msg.from;
     let query = '';
     let files = [];
 
     if (msg.type !== 'chat') {
-      // 1. 第一道保险：等 1.2 秒让 WhatsApp Web 渲染完
-      // await new Promise(r => setTimeout(r, 1200));
-      // 2. 第二道保险：强制从服务器重新拉一次完整消息
-      let fresh;
       try {
-          await new Promise(r => setTimeout(r, 1000));
-          fresh = await client.getMessageById(msg.id._serialized);
-          msg = fresh;
-          console.log(`重新强制获取消息，from: ${fresh.from}, type: ${fresh.type}, body: ${fresh.body}`);
-          appendLog(user, `重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
-      } catch (e) {
-        try {
-          // 网络抖动再试一次
-          await new Promise(r => setTimeout(r, 1000));
-          fresh = await client.getMessageById(msg.id._serialized);
-          msg = fresh;
-          console.log(`重新强制获取消息，from: ${fresh.from}, type: ${fresh.type}, body: ${fresh.body}`);
-          appendLog(user, `重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
-        } catch (err) {
-          appendLog(user, `获取消息失败，使用原始消息，错误：${e.message}`);
-        }
+        await new Promise(r => setTimeout(r, 1000));
+        const fresh = await client.getMessageById(msg.id);
+        if (fresh) msg = fresh;
+        console.log(`重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
+        appendLog(user, `重新强制获取消息，from: ${msg.from}, type: ${msg.type}, body: ${msg.body}`);
+      } catch (err) {
+        appendLog(user, `获取消息失败，使用原始消息，错误：${err.message}`);
       }
     }
 
     // 判断是否群聊
-    const chat = await msg.getChat();
+    const chat = await client.getChatById(msg.from);
     const isGroup = chat.isGroup;
     const groupName = isGroup ? chat.name : '非群組';
-    console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id._serialized}`);
-    appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id._serialized}`);
+    console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
+    appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
     if (!isGroup || msg.body.includes('Permit') || msg.body.includes('提示') || msg.body.includes('留意')) {
       console.log('不是群聊消息，不回复用户');
       appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
@@ -642,12 +659,7 @@ client.on('message', async msg => {
     let contactPhone = '';
     try {
       if (EXTERNAL_SCAFFOLDING_GROUPS.includes(groupId)) {
-        const senderContact = await client.getContactLidAndPhone([msg.author]);
-        console.log(`发送人通讯数据: ${JSON.stringify(senderContact)}`);
-        appendLog(user, `发送人通讯数据: ${JSON.stringify(senderContact)}`);
-        const contact = senderContact[0];
-        // 获取电话号码并去除 @c.us 后缀
-        contactPhone = contact ? contact.pn.replace('@c.us', '') : '';
+        contactPhone = await getSenderPhoneNumber(client, msg.author || msg.from);
       }
     } catch (contactError) {
       console.log('获取发送人联系信息失败:', contactError.message);
@@ -676,43 +688,58 @@ client.on('message', async msg => {
           // 假定接口返回的是一个 JSON 数组
           const data = resp.data;
           const summary = formatSummary(data, groupId);
-          await msg.reply(summary);
+          await client.reply(msg.from, summary, msg.id);
         } catch (err) {
           console.log(`调用 records/today 失败：${err.message}`);
           appendLog(groupId, `调用 records/today 失败：${err.message}`);
-          await msg.reply('获取今日记录失败，请稍后重试。');
+          await client.reply(msg.from, '获取今日记录失败，请稍后重试。', msg.id);
         }
         return;  // 拦截后不再往下走 FastGPT 流程
       }
-    } else if (msg.type === 'image') {
-      // 图片（可能带有文字 caption）
-      const media = await msg.downloadMedia();
-      if (media) {
-        const ext = mime.extension(media.mimetype) || 'jpg';
-        const filename = `img_${Date.now()}.${ext}`;
-        // 保存到群组文件夹img目录下的日期文件夹
-        const groupDir = path.join(LOG_DIR, groupId || 'default');
-        const dateStr = new Date().toISOString().slice(0, 10);
-        const imgDir = path.join(groupDir, 'img', dateStr);
-        ensureDir(imgDir);
-        const filepath = path.join(imgDir, filename);
-        await fs.writeFile(filepath, media.data, 'base64');
-        console.log(`图片已保存: ${filepath}`);
-        appendLog(groupId, `图片已保存: ${filepath}`);
+    } else if (msg.type === 'image' || msg.type === 'album') {
+      // 图片或相册（可能带有文字 caption）
+      // 支持相册场景：如果是 album，并且存在 medias 数组，则对每一张图片单独处理
+      const mediaMessages =
+        msg.type === 'album' && Array.isArray(msg.medias) && msg.medias.length
+          ? msg.medias
+          : [msg];
 
-        // 支持图文混合：读取 caption 或 body
-        const caption = msg.caption || msg.body || '';
-        query = caption ? `[图片] ${caption}` : '[图片]';
+      const savedFiles = [];
+      for (const mediaMsg of mediaMessages) {
+        const media = await client.downloadMedia(mediaMsg);
+        if (media) {
+          const ext = mime.extension(mediaMsg.mimetype) || 'jpg';
+          const filename = `img_${Date.now()}_${savedFiles.length}.${ext}`;
+          const filepath = path.join(TMP_DIR, filename);
+          // media is base64 string, remove prefix if present
+          const base64Data = media.replace(/^data:.*;base64,/, '');
+          await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
+          savedFiles.push(filepath);
+          console.log(`图片已保存: ${filepath}`);
+          appendLog(groupId, `图片已保存: ${filepath}`);
+        }
+      }
+
+      // 支持图文混合：读取 caption 或 body（album 的 caption 在原始 msg 上）
+      const caption = msg.caption || msg.body || '';
+      const imageCount = savedFiles.length;
+      if (imageCount > 0) {
+        if (msg.type === 'album') {
+          query = caption ? `[相册 ${imageCount}张图片] ${caption}` : `[相册 ${imageCount}张图片]`;
+        } else {
+          query = caption ? `[图片] ${caption}` : '[图片]';
+        }
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
       }
     } else if (['ptt', 'audio'].includes(msg.type)) {
-      const media = await msg.downloadMedia();
+      const media = await client.downloadMedia(msg);
       if (media) {
-        const ext = mime.extension(media.mimetype) || 'ogg';
+        const ext = mime.extension(msg.mimetype) || 'ogg';
         const filename = `audio_${Date.now()}.${ext}`;
         const filepath = path.join(TMP_DIR, filename);
-        await fs.writeFile(filepath, media.data, 'base64');
+        const base64Data = media.replace(/^data:.*;base64,/, '');
+        await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
         console.log(`语音已保存: ${filepath}`);
         appendLog(groupId, `语音已保存: ${filepath}`);
         query = await audioToText(filepath, user);
@@ -738,7 +765,7 @@ client.on('message', async msg => {
 
     if (!query) {
       if (!isGroup || shouldReply(msg, BOT_NAME)) {
-        await msg.reply('未识别到有效内容。');
+        await client.reply(msg.from, '未识别到有效内容。', msg.id);
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
       }
@@ -819,7 +846,7 @@ client.on('message', async msg => {
       if (replyStr === null) {
         console.log('無匹配條件，無法處理查詢');
         appendLog(groupId, '無匹配條件，無法處理查詢');
-        if (needReply) await msg.reply('無法處理您的請求，請檢查輸入內容。');
+        if (needReply) await client.reply(msg.from, '無法處理您的請求，請檢查輸入內容。', msg.id);
         return;
       }
       console.log(`查詢處理完成，結果: ${replyStr}`);
@@ -827,7 +854,7 @@ client.on('message', async msg => {
     } catch (e) {
       console.log(`查詢處理失敗: ${e.message}`);
       appendLog(groupId, `查詢處理失敗: ${e.message}`);
-      if (needReply) await msg.reply('處理請求失敗，請稍後再試。');
+      if (needReply) await client.reply(msg.from, '處理請求失敗，請稍後再試。', msg.id);
       return;
     }
 
@@ -836,7 +863,7 @@ client.on('message', async msg => {
       try {
         console.log(`尝试回复用户: ${replyStr}`);
         appendLog(groupId, `尝试回复用户: ${replyStr}`);
-        await msg.reply(replyStr);
+        await client.reply(msg.from, replyStr, msg.id);
         console.log('已回复用户');
         appendLog(groupId, '已回复用户');
       } catch (e) {
@@ -853,7 +880,7 @@ client.on('message', async msg => {
     appendLog(msg.from, `处理消息出错: ${err.message}`);
     if (!isBlacklistedGroup(msg.from)) {
       try {
-        await msg.reply('机器人处理消息时出错，请稍后再试。');
+        await client.reply(msg.from, '机器人处理消息时出错，请稍后再试。', msg.id);
       } catch (replyErr) {
         console.log(`发送错误回复失败: ${replyErr.message}`);
       }
@@ -864,10 +891,10 @@ client.on('message', async msg => {
     console.log('处理消息时发生异常');
     appendLog(msg.from, '处理消息时发生异常');
   }
-});
+}
 
 
-client.initialize();
+// client.initialize() 不再需要，由 wppconnect.create 替代
 
 // — 上传图片/文件到 Dify —
 async function uploadFileToDify(filepath, user, type = 'image') {
@@ -986,8 +1013,8 @@ async function sendToFastGPT({ query, user, apikey }) {
         (msg.includes('aborted') || msg.includes('stream') || msg.includes('ECONNRESET') || msg.includes('ERR_BAD_RESPONSE')) &&
         i < 2 // 只重试前两次
       ) {
-        console.log(`FastGPT 请求断流，正在第${i+1}次重试...`);
-        appendLog(user, `FastGPT 请求断流，正在第${i+1}次重试...`);
+        console.log(`FastGPT 请求断流，正在第${i + 1}次重试...`);
+        appendLog(user, `FastGPT 请求断流，正在第${i + 1}次重试...`);
         await new Promise(res => setTimeout(res, 1200 * (i + 1)));
         continue;
       }
@@ -1028,7 +1055,7 @@ async function sendToDify({ query, user, files = [], response_mode = 'streaming'
         (msg.includes('aborted') || msg.includes('stream') || msg.includes('ECONNRESET') || msg.includes('ERR_BAD_RESPONSE')) &&
         i < 2 // 只重试前两次
       ) {
-        appendLog(user, `Dify stream断流，正在第${i+1}次重试...`);
+        appendLog(user, `Dify stream断流，正在第${i + 1}次重试...`);
         await new Promise(res => setTimeout(res, 1200 * (i + 1)));
         continue;
       }
@@ -1047,7 +1074,7 @@ async function getSummary(group_id) {
   });
   const data = resp.data;
   const summary = formatSummary(data, group_id);
-  await client.sendMessage(group_id, summary); // 主动发到群聊
+  await client.sendText(group_id, summary); // 主动发到群聊
 }
 
 async function getOTSummary(group_id) {
@@ -1058,7 +1085,7 @@ async function getOTSummary(group_id) {
   });
   const data = resp.data;
   const summary = formatOTSummary(data);
-  await client.sendMessage(group_id, summary); // 主动发到群聊
+  await client.sendText(group_id, summary); // 主动发到群聊
 }
 
 // 汇总生成函数
@@ -1072,11 +1099,12 @@ async function sendTodaySummary() {
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
-    await client.sendMessage(GROUP_ID, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -1093,12 +1121,12 @@ async function sendOTSummary() {
     appendLog('default', '定时推送已发送');
   } catch (err) {
     appendLog('default', `调用 records/today 失败：${err.message}`);
-    await client.sendMessage(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
-    await client.sendMessage(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_2, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_3, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_4, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_7, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_8, '获取今日记录失败，请稍后重试。');
+    await client.sendText(GROUP_ID_9, '获取今日记录失败，请稍后重试。');
   }
 }
 
@@ -1120,12 +1148,12 @@ cron.schedule('0 10-19 * * *', async () => {
 });
 cron.schedule('0 10-19 * * *', async () => {
   try {
-      await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
-      appendLog(GROUP_ID_9, '每小时总结推送成功');
+    await getSummary(GROUP_ID_9); // 仅针对 Site A 外墙
+    appendLog(GROUP_ID_9, '每小时总结推送成功');
   } catch (e) {
-      const errMsg = `每小时总结推送失败: ${e.message}`;
-      console.error(e);
-      appendLog(GROUP_ID_9, errMsg);
+    const errMsg = `每小时总结推送失败: ${e.message}`;
+    console.error(e);
+    appendLog(GROUP_ID_9, errMsg);
   }
 });
 cron.schedule('0 18 * * *', sendOTSummary);  // 18:00
