@@ -2320,6 +2320,113 @@ def list_email_accounts():
     return jsonify(rows)
 
 
+@app.route("/email_accounts/credentials", methods=["POST"])
+def list_email_account_credentials():
+    """
+    内部接口：返回邮箱账号 + 加密密码（不解密）
+    - 只允许 POST JSON body，禁止 URL query（避免进 nginx/flask 日志）
+    - 可选：如果设置了环境变量 EMAIL_ACCOUNTS_CREDENTIALS_TOKEN，则要求请求携带 token
+      - Header: Authorization: Bearer <token>  或  X-Internal-Token: <token>
+    - body 可选字段：
+      - email_account: 指定单个账号；不传则返回全部
+    """
+    if request.args:
+        return _json_error("隐私要求：/email_accounts/credentials 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    # 可选 token 保护（不破坏现有部署：未配置 token 时不强制）
+    required_token = os.getenv("EMAIL_ACCOUNTS_CREDENTIALS_TOKEN") or ""
+    if required_token:
+        auth = request.headers.get("Authorization", "") or ""
+        internal = request.headers.get("X-Internal-Token", "") or ""
+        got = ""
+        if auth.lower().startswith("bearer "):
+            got = auth.split(" ", 1)[1].strip()
+        elif internal:
+            got = internal.strip()
+        if got != required_token.strip():
+            return _json_error("未授权", 401, code="unauthorized")
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    email_account = data.get("email_account")
+    if email_account is not None:
+        email_account = str(email_account).strip()
+
+    try:
+        if email_account:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            rows = execute_query(sql, (email_account,), fetch=True)
+        else:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            rows = execute_query(sql, (), fetch=True)
+        return jsonify({"ok": True, "results": rows})
+    except Exception as e:
+        return _json_error("读取邮箱账号失败", 500, code="email_accounts_credentials_failed", detail=str(e))
+
+
+@app.route("/email_accounts/plain_credentials", methods=["POST"])
+def list_email_account_plain_credentials():
+    """
+    内部接口：返回邮箱账号 + 明文密码（会解密）
+    - 只允许 POST JSON body，禁止 URL query（避免进 nginx/flask 日志）
+    - 强制 token 保护：必须设置环境变量 EMAIL_ACCOUNTS_PLAINTEXT_TOKEN
+      - Header: Authorization: Bearer <token>  或  X-Internal-Token: <token>
+    - body 可选字段：
+      - email_account: 指定单个账号；不传则返回全部
+    """
+    if request.args:
+        return _json_error("隐私要求：/email_accounts/plain_credentials 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    required_token = os.getenv("EMAIL_ACCOUNTS_PLAINTEXT_TOKEN") or ""
+    if not required_token:
+        return _json_error("服务端未配置 EMAIL_ACCOUNTS_PLAINTEXT_TOKEN，拒绝提供明文密码接口", 403, code="plaintext_token_not_configured")
+
+    auth = request.headers.get("Authorization", "") or ""
+    internal = request.headers.get("X-Internal-Token", "") or ""
+    got = ""
+    if auth.lower().startswith("bearer "):
+        got = auth.split(" ", 1)[1].strip()
+    elif internal:
+        got = internal.strip()
+    if got != required_token.strip():
+        return _json_error("未授权", 401, code="unauthorized")
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    email_account = data.get("email_account")
+    if email_account is not None:
+        email_account = str(email_account).strip()
+
+    try:
+        if email_account:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            rows = execute_query(sql, (email_account,), fetch=True)
+        else:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            rows = execute_query(sql, (), fetch=True)
+
+        results = []
+        for r in rows or []:
+            acc = r.get("email_account")
+            enc = r.get("encrypted_password")
+            if not acc or not enc:
+                continue
+            try:
+                pwd = decrypt_password(enc)
+            except Exception as e:
+                results.append({"email_account": acc, "password": None, "decrypt_error": str(e)})
+                continue
+            results.append({"email_account": acc, "password": pwd})
+
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return _json_error("读取邮箱账号失败", 500, code="email_accounts_plain_credentials_failed", detail=str(e))
+
+
 @app.route("/email_accounts/check", methods=["GET", "POST"])
 def check_email_account_exists():
     """

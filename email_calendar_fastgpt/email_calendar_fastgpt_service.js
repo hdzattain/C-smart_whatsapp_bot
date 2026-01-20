@@ -21,6 +21,8 @@ const FASTGPT_MAIL_API_KEY = process.env.FASTGPT_MAIL_API_KEY || '';
 const FEISHU_APP_ID = process.env.FEISHU_APP_ID || process.env.LARK_APP_ID || '';
 const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || process.env.LARK_APP_SECRET || '';
 const API_BASE_URL = process.env.API_BASE_URL || '';
+// credentials 接口可能部署在不同网关/路径下：允许单独配置
+const CREDENTIALS_API_BASE_URL = process.env.CREDENTIALS_API_BASE_URL || API_BASE_URL;
 
 // ========== 邮件落盘/预处理配置 ==========
 // 目录结构：
@@ -43,6 +45,9 @@ const EMAIL_PULL_USER_DELAY_MS = Number.parseInt(process.env.EMAIL_PULL_USER_DEL
 const EMAIL_ENCRYPTION_KEY = process.env.EMAIL_ENCRYPTION_KEY || '';
 // 可选：内部接口 token（Python 端：EMAIL_ACCOUNTS_CREDENTIALS_TOKEN）
 const EMAIL_ACCOUNTS_CREDENTIALS_TOKEN = process.env.EMAIL_ACCOUNTS_CREDENTIALS_TOKEN || '';
+// 可选：明文密码接口 token（Python 端：EMAIL_ACCOUNTS_PLAINTEXT_TOKEN）
+const EMAIL_ACCOUNTS_PLAINTEXT_TOKEN = process.env.EMAIL_ACCOUNTS_PLAINTEXT_TOKEN || '';
+const EMAIL_USE_PLAINTEXT_PASSWORD = (process.env.EMAIL_USE_PLAINTEXT_PASSWORD || 'false').toLowerCase() === 'true';
 // IMAP 连接参数（Node 端直连 IMAP，不再依赖 /mail/receive 接口）
 const IMAP_SERVER = process.env.IMAP_SERVER || process.env.DEFAULT_IMAP_SERVER || 'owahk.cohl.com';
 const IMAP_PORT = Number.parseInt(process.env.IMAP_PORT || process.env.DEFAULT_IMAP_PORT || '993', 10);
@@ -221,21 +226,49 @@ async function _fetchEmailsFromMailApiWithPassword(emailAccount, emailPassword) 
 }
 
 async function loadUsersWithCredentialsFromAPI() {
-  if (!API_BASE_URL) throw new Error('缺少配置：API_BASE_URL');
-  const url = `${API_BASE_URL}/email_accounts/credentials`;
+  if (!CREDENTIALS_API_BASE_URL) throw new Error('缺少配置：CREDENTIALS_API_BASE_URL 或 API_BASE_URL');
+  const url = EMAIL_USE_PLAINTEXT_PASSWORD
+    ? `${CREDENTIALS_API_BASE_URL}/email_accounts/plain_credentials`
+    : `${CREDENTIALS_API_BASE_URL}/email_accounts/credentials`;
   const headers = {};
-  if (EMAIL_ACCOUNTS_CREDENTIALS_TOKEN) {
-    headers['Authorization'] = `Bearer ${EMAIL_ACCOUNTS_CREDENTIALS_TOKEN}`;
+  if (EMAIL_USE_PLAINTEXT_PASSWORD) {
+    if (EMAIL_ACCOUNTS_PLAINTEXT_TOKEN) headers['Authorization'] = `Bearer ${EMAIL_ACCOUNTS_PLAINTEXT_TOKEN}`;
+  } else {
+    if (EMAIL_ACCOUNTS_CREDENTIALS_TOKEN) headers['Authorization'] = `Bearer ${EMAIL_ACCOUNTS_CREDENTIALS_TOKEN}`;
   }
-  const resp = await axios.post(url, {}, { timeout: 30000, headers });
+  let resp;
+  try {
+    resp = await axios.post(url, {}, { timeout: 30000, headers });
+  } catch (e) {
+    const status = e?.response?.status;
+    if (status === 404) {
+      throw new Error(
+        `credentials 接口 404：${url}。说明网关未转发或后端未部署新增接口 /email_accounts/credentials。` +
+        `请把 C-smart-epermit 的 crud_sql_apiserver.py 更新并重启，或在 .env 设置正确的 CREDENTIALS_API_BASE_URL 指向该服务。`
+      );
+    }
+    throw e;
+  }
   const data = resp.data || {};
   const rows = Array.isArray(data.results) ? data.results : [];
 
   const out = [];
   for (const r of rows) {
     const acc = _safeStr(r?.email_account).trim();
+    if (!acc) continue;
+    // 明文模式：直接使用 password
+    if (EMAIL_USE_PLAINTEXT_PASSWORD) {
+      const pwd = _safeStr(r?.password).trim();
+      if (!pwd) {
+        console.error('[配置][plaintext] 缺少 password 或解密失败:', acc, _safeStr(r?.decrypt_error));
+        continue;
+      }
+      out.push({ email_account: acc, email_password: pwd });
+      continue;
+    }
+    // 默认模式：使用 encrypted_password + EMAIL_ENCRYPTION_KEY 解密
     const enc = _safeStr(r?.encrypted_password).trim();
-    if (!acc || !enc) continue;
+    if (!enc) continue;
     try {
       const pwd = _fernetDecrypt(enc, EMAIL_ENCRYPTION_KEY);
       out.push({ email_account: acc, email_password: pwd });
