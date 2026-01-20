@@ -1200,6 +1200,30 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
   );
   console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
   appendLog(adminGroupId, `[AdminGroupFiles] 下载成功: outPath=${dl.outPath} bytes=${dl.bytes} contentType=${dl.contentType}`);
+  
+  // === 发送图片到指定 WhatsApp 群 ===
+  try {
+    const targetGroupId = '120363405248038757@g.us';
+    const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
+    
+    if (isImage) {
+      await client.sendImage(
+        targetGroupId,
+        dl.outPath,
+        dl.filename,
+        ''
+      );
+      console.log(`[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+      appendLog(adminGroupId, `[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+    } else {
+      console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
+      appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
+    }
+  } catch (e) {
+    console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
+    appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
+  }
+  
   console.log(`[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
   appendLog(adminGroupId, `[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
   return { record: rec, download: dl };
@@ -3477,9 +3501,9 @@ function start(client) {
     }
   };
 
-  cron.schedule('* * * * *', async () => {
-    console.log('[定时任务] 16:30 AdminGroups 群文件拉取+下载（香港时区）');
-    await runAdminGroupsDownload('08:00');
+  cron.schedule('50 21 * * *', async () => {
+    console.log('[定时任务] 21:50 AdminGroups 群文件拉取+下载（香港时区）');
+    await runAdminGroupsDownload('21:50');
   }, { timezone: 'Asia/Hong_Kong' });
 
   // cron.schedule('0 22 * * *', async () => {
