@@ -310,16 +310,28 @@ async function _fetchEmailsViaImap(emailAccount, emailPassword) {
   await client.connect();
   const lock = await client.getMailboxLock(mailbox);
   try {
-    const search = [];
-    search.push(EMAIL_PULL_UNREAD_ONLY ? 'UNSEEN' : 'ALL');
-
-    // 尽量用服务器侧过滤减少数据量；同时保留客户端二次过滤兜底
-    if (EMAIL_PULL_TODAY_ONLY) {
-      const hk0 = _hkMidnightDate(new Date());
-      search.push(['SINCE', hk0]);
+    // Exchange + imapflow：优先使用 object 查询（更稳定），必要时 fallback 到数组语法
+    const hk0 = EMAIL_PULL_TODAY_ONLY ? _hkMidnightDate(new Date()) : null;
+    const queryObj = {};
+    if (EMAIL_PULL_UNREAD_ONLY) {
+      // 未读：seen=false
+      queryObj.seen = false;
+    } else {
+      // 全部：imapflow 里可以用 all=true
+      queryObj.all = true;
     }
+    if (hk0) queryObj.since = hk0;
 
-    let uids = await client.search(search);
+    let uids;
+    try {
+      uids = await client.search(queryObj);
+    } catch (e) {
+      // fallback：部分版本可能更偏好数组语法
+      const searchArr = [];
+      searchArr.push(EMAIL_PULL_UNREAD_ONLY ? 'UNSEEN' : 'ALL');
+      if (hk0) searchArr.push(['SINCE', hk0]);
+      uids = await client.search(searchArr);
+    }
     if (!Array.isArray(uids) || uids.length === 0) return [];
     uids.sort((a, b) => a - b);
     const picked = uids.slice(-receiveNumber);
