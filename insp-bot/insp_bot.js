@@ -68,6 +68,7 @@ const WIKI_TABLE_ID = 'tblyXhKKu9y3AALG';
 const PLAN_FASTGPT_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
 const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
 const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
+const GROUP_FILES_API_URL = process.env.GROUP_FILES_API_URL || '';
 // SafetyBot 控制标志
 const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执行日志，不发送text或reaction
 const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
@@ -1008,6 +1009,168 @@ async function uploadFileToFeishuWithSDK(filepath, options = {}) {
     console.error(`[ERR] 飞书 SDK 上传失败: ${err.message}`, err);
     throw new Error(`飞书 SDK 上传失败: ${err.message}`);
   }
+}
+
+// ========== AdminGroups: 拉群文件并下载为本地图片 ==========
+// tenant_access_token (internal) 缓存
+let _tenantTokenCache = { token: null, expireAt: 0 };
+
+async function getTenantAccessTokenInternalCached() {
+  const now = Date.now();
+  if (_tenantTokenCache.token && _tenantTokenCache.expireAt && now < _tenantTokenCache.expireAt) {
+    return _tenantTokenCache.token;
+  }
+
+  const appId = process.env.LARK_APP_ID || LARK_APP_ID;
+  const appSecret = process.env.LARK_APP_SECRET || LARK_APP_SECRET;
+  if (!appId || !appSecret || appId === 'app id' || appSecret === 'app secret') {
+    throw new Error('未配置 LARK_APP_ID / LARK_APP_SECRET，无法获取 tenant_access_token');
+  }
+
+  const url = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/';
+  const res = await axios.post(
+    url,
+    { app_id: appId, app_secret: appSecret },
+    { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+
+  const data = res?.data || {};
+  const token = data.tenant_access_token;
+  const expire = Number(data.expire || 0);
+  if (!token) {
+    throw new Error(`获取 tenant_access_token 失败: ${JSON.stringify(data)}`);
+  }
+
+  // 提前 60s 过期，避免临界时间出错
+  _tenantTokenCache = {
+    token,
+    expireAt: Date.now() + Math.max(0, expire - 60) * 1000
+  };
+  return token;
+}
+
+function isoDateInTZ(tz = 'Asia/Hong_Kong', d = new Date()) {
+  // en-CA 输出 YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(d);
+}
+
+function safeFilename(name = '') {
+  const s = String(name || '').trim() || 'file';
+  // 替换不安全字符
+  return s.replace(/[\\/:*?"<>|\r\n\t]/g, '_');
+}
+
+function parseContentDispositionFilename(disposition = '') {
+  const cd = String(disposition || '');
+  // RFC5987: filename*=UTF-8''xxx
+  const mStar = cd.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (mStar && mStar[1]) {
+    try {
+      return decodeURIComponent(mStar[1].trim().replace(/^"(.*)"$/, '$1'));
+    } catch {
+      return mStar[1].trim().replace(/^"(.*)"$/, '$1');
+    }
+  }
+  const m = cd.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  if (m && m[2]) return m[2].trim();
+  return '';
+}
+
+async function fetchLatestGroupFileRecord(groupId, dateISO) {
+  // 后端支持 GET JSON body；bstudio_create_time 传 YYYY-MM-DD 会按当天范围查
+  const payload = {
+    group_id: groupId,
+    bstudio_create_time: dateISO
+  };
+
+  const resp = await axios.request({
+    method: 'GET',
+    url: GROUP_FILES_API_URL,
+    headers: { 'Content-Type': 'application/json' },
+    data: payload,
+    timeout: 20000
+  });
+
+  const rows = resp?.data;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+
+  // 后端已按 id DESC 排序；这里仍做一次兜底排序
+  const sorted = rows.slice().sort((a, b) => {
+    const ta = new Date(a?.bstudio_create_time || 0).getTime() || 0;
+    const tb = new Date(b?.bstudio_create_time || 0).getTime() || 0;
+    if (tb !== ta) return tb - ta;
+    return (Number(b?.id || 0) - Number(a?.id || 0));
+  });
+
+  return sorted[0] || null;
+}
+
+async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDir }) {
+  if (!fileToken) throw new Error('fileToken 为空');
+  ensureDir(saveDir);
+
+  const token = await getTenantAccessTokenInternalCached();
+  const url = `https://open.feishu.cn/open-apis/drive/v1/medias/${encodeURIComponent(fileToken)}/download`;
+
+  const res = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+  const cd = String(res.headers?.['content-disposition'] || '');
+  const filenameFromHeader = parseContentDispositionFilename(cd);
+
+  let filename = safeFilename(filenameFromHeader || suggestedFileName || `media_${Date.now()}`);
+  // 补扩展名
+  if (!/\.[a-z0-9]{2,8}$/i.test(filename)) {
+    const ext = mime.extension(contentType) || 'bin';
+    filename = `${filename}.${ext}`;
+  }
+
+  const outPath = path.join(saveDir, filename);
+  await fsPromises.writeFile(outPath, Buffer.from(res.data));
+  return { outPath, filename, contentType, bytes: Buffer.byteLength(res.data) };
+}
+
+async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
+  const dateISO = isoDateInTZ('Asia/Hong_Kong');
+  appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
+
+  const rec = await fetchLatestGroupFileRecord(adminGroupId, dateISO);
+  if (!rec) {
+    appendLog(adminGroupId, `[AdminGroupFiles] 未找到当日文件: group_id=${adminGroupId}, date=${dateISO}`);
+    return null;
+  }
+
+  const fileToken = rec.file_url;
+  const fileName = rec.file_name;
+  const createdAt = rec.bstudio_create_time;
+
+  if (!fileToken) {
+    appendLog(adminGroupId, `[AdminGroupFiles] 记录缺少 file_url(file_token): ${JSON.stringify(rec)}`);
+    return null;
+  }
+
+  const saveDir = path.join(TMP_DIR, 'admin_group_files', safeFilename(adminGroupId), dateISO);
+  const dl = await downloadFeishuMediaToLocal({
+    fileToken,
+    suggestedFileName: fileName,
+    saveDir
+  });
+
+  appendLog(
+    adminGroupId,
+    `[AdminGroupFiles] 下载成功: token=${fileToken}, createdAt=${createdAt}, name=${fileName} => ${dl.outPath} (${dl.bytes} bytes, ${dl.contentType})`
+  );
+  console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
+  return { record: rec, download: dl };
 }
 
 function containsSummaryKeyword(text) {
@@ -3253,6 +3416,32 @@ function start(client) {
   }, {
     timezone: 'Asia/Hong_Kong'
   });
+
+  // AdminGroups：每天 08:00、10:00 拉取当日最新群文件并下载到本地 tmp（香港时区）
+  // 先只做“拉取+下载+日志”，后续处理你说等下再碰
+  const runAdminGroupsDownload = async (whenLabel) => {
+    if (!adminGroups.length) return;
+    for (const gid of adminGroups) {
+      if (!gid) continue;
+      try {
+        await handleAdminGroupDailyFileDownload(client, gid, whenLabel);
+      } catch (e) {
+        const msg = e?.message || String(e);
+        console.error('[AdminGroupFiles] 处理失败:', gid, msg);
+        appendLog(gid, `[AdminGroupFiles] 处理失败: ${msg}`);
+      }
+    }
+  };
+
+  cron.schedule('25 16 * * *', async () => {
+    console.log('[定时任务] 20:00 AdminGroups 群文件拉取+下载（香港时区）');
+    await runAdminGroupsDownload('08:00');
+  }, { timezone: 'Asia/Hong_Kong' });
+
+  cron.schedule('0 22 * * *', async () => {
+    console.log('[定时任务] 22:00 AdminGroups 群文件拉取+下载（香港时区）');
+    await runAdminGroupsDownload('10:00');
+  }, { timezone: 'Asia/Hong_Kong' });
 
   // 下午2:30定时任务：针对特定群组，先执行 AI 进度更新，然后执行 AI 进度总结
 }
