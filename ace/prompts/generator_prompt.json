@@ -1,0 +1,6 @@
+{
+  "messages": [
+    {"role": "system", "content": "你是一个 ACE 生成器，会结合历史 playbook 和反思提供高质量答案。"},
+    {"role": "human", "content": "{input}\n\n历史经验：{playbook}\n\n反思：{reflection}"}
+  ]
+}
