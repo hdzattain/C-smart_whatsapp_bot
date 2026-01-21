@@ -621,6 +621,12 @@ function shouldReply(msg, botName) {
   return true; // 私聊，默认都回复
 }
 
+function canBeIgnore(msgBody){
+    return msgBody === ''|| msgBody.includes('Permit') || msgBody.includes('提示') || msgBody.includes('留意');
+}
+
+
+
 /**
  * 尝试从客户端获取发送者的电话号码
  */
@@ -660,9 +666,10 @@ async function handleMessage(msg) {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
-    if (!isGroup || msg.body.includes('Permit') || msg.body.includes('提示') || msg.body.includes('留意')) {
-      console.log('不是群聊消息，不回复用户');
-      appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
+    const msgBody = msg.body || '';
+    if (!isGroup || canBeIgnore(msgBody)){
+      console.log('不是群聊消息，或为可忽略的语句，不回复用户');
+      appendLog(user, '不是群聊消息，或为可忽略的语句，不回复用户');
       return;
     }
     // 在发送到API前，记录 group_id
@@ -733,16 +740,17 @@ async function handleMessage(msg) {
           appendLog(groupId, `图片已保存: ${filepath}`);
         }
       }
-
-      // 支持图文混合：读取 caption 或 body（album 的 caption 在原始 msg 上）
+      
+      // 支持图文混合：读取 caption 或 body
       const caption = msg.caption || msg.body || '';
+      if (canBeIgnore(caption)){
+        console.log('消息为可忽略的语句');
+        appendLog(user, '消息为可忽略的语句');
+        return;
+      }
       const imageCount = savedFiles.length;
       if (imageCount > 0) {
-        if (msg.type === 'album') {
-          query = caption ? `[相册 ${imageCount}张图片] ${caption}` : `[相册 ${imageCount}张图片]`;
-        } else {
-          query = caption ? `[图片] ${caption}` : '[图片]';
-        }
+        query = caption ? `[图片] ${caption}` : '[图片]';
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
       }
