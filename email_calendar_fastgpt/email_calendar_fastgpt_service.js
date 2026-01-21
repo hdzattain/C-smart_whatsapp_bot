@@ -178,7 +178,7 @@ function _normalizeFernetKeyTo32Bytes(keyStr) {
   try {
     const buf = _b64urlToBuf(keyStr);
     if (buf.length === 32) return buf;
-  } catch (_) {}
+  } catch (_) { }
   // 退一步：把字符串当作 raw bytes，再 base64url encode 再 decode（等价于 Python 的兜底）
   const rawBytes = Buffer.from(String(keyStr), 'utf8');
   const b64 = rawBytes.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -348,7 +348,15 @@ async function _sendFeishuSummaryFromFiles(emailAccount, dateStr) {
       // 需要解析出实际的文本内容
       if (raw.startsWith('"content":')) {
         const jsonStr = raw.replace(/^"content":\s*/, '').trim();
-        const contentObj = JSON.parse(jsonStr);
+        let contentObj = JSON.parse(jsonStr);
+        // 如果 contentObj 还是字符串，说明是 double stringify 了（对应 _makeContentLineFromText 的输出行为）
+        if (typeof contentObj === 'string') {
+          try {
+            contentObj = JSON.parse(contentObj);
+          } catch (_) {
+            // 忽略转换失败，按原样后续处理
+          }
+        }
         if (contentObj && typeof contentObj.text === 'string') {
           parts.push(contentObj.text);
         } else {
@@ -557,8 +565,8 @@ async function _fetchEmailsViaImap(emailAccount, emailPassword) {
     out.sort((a, b) => (Number.parseInt(b.id, 10) || 0) - (Number.parseInt(a.id, 10) || 0));
     return out;
   } finally {
-    try { lock.release(); } catch (_) {}
-    try { await client.logout(); } catch (_) {}
+    try { lock.release(); } catch (_) { }
+    try { await client.logout(); } catch (_) { }
   }
 }
 
@@ -588,7 +596,7 @@ async function pullEmailsToDiskForUser(emailAccount, emailPassword) {
         const m = fn.match(/^(\d+)_/);
         if (m) existing.add(m[1]);
       }
-    } catch (_) {}
+    } catch (_) { }
 
     for (const mail of mailList) {
       const id = _safeStr(mail?.id).trim();
@@ -638,7 +646,7 @@ async function generateTxtResultsForUserDate(emailAccount, dateStr) {
       const m = fn.match(/^(\d+)_/);
       if (m) doneIds.add(m[1]);
     }
-  } catch (_) {}
+  } catch (_) { }
 
   // json 文件按 id 去重：同一 id 取最新的一个
   const chosen = new Map(); // id -> {filePath, mtimeMs, baseName}
@@ -808,7 +816,7 @@ async function buildFinalPartsForUserDate(emailAccount, dateStr) {
         fs.unlinkSync(path.join(finalDir, fn));
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   let idx = 1;
   for (const text of parts) {
@@ -843,7 +851,7 @@ async function runEmailPipelinePull() {
         const msg = `[邮箱拉取失败]\n用户: ${u.email_account}\n错误: ${e && e.message ? e.message : String(e)}`;
         try {
           await _sendFeishuAlertToAdmin(msg);
-        } catch (_) {}
+        } catch (_) { }
       }
       await _sleep(EMAIL_PULL_USER_DELAY_MS);
     }
@@ -1035,7 +1043,7 @@ async function executeTaskForUser(emailAccount, taskType) {
 async function executeScheduledTask(taskTypeIndex) {
   try {
     console.log(`[定时任务] 开始执行任务类型: ${TASK_TYPES[taskTypeIndex].name}`);
-    
+
     // 从 API 获取最新的用户列表
     const users = await loadUsersFromAPI();
     if (!users || users.length === 0) {
@@ -1044,14 +1052,14 @@ async function executeScheduledTask(taskTypeIndex) {
     }
 
     console.log(`[定时任务] 找到 ${users.length} 个用户，开始为每个用户执行任务`);
-    
+
     // 为每个用户执行任务（并行执行）
-    const promises = users.map(user => 
+    const promises = users.map(user =>
       executeTaskForUser(user.email_account, taskTypeIndex).catch(err => {
         console.error(`[ERR] 用户 ${user.email_account} 的任务执行失败:`, err.message);
       })
     );
-    
+
     await Promise.all(promises);
     console.log(`[定时任务] ${TASK_TYPES[taskTypeIndex].name} 执行完成`);
   } catch (err) {
@@ -1102,25 +1110,25 @@ function createMailClient(chatId) {
 async function executeTask(task) {
   try {
     console.log(`[定时任务] 开始执行: ${task.name} (用户: ${task.email_account})`);
-    
+
     // 每次执行时生成随机 chatId
     const randomChatId = generateRandomChatId();
     console.log(`[定时任务] 使用随机 chatId: ${randomChatId}`);
-    
+
     // 为每个任务创建独立的客户端（使用随机 chatId）
     const client = createClient(randomChatId);
-    
+
     // 构建 variables
     const variables = {
       email_account: task.email_account
     };
-    
+
     const result = await client.sendToFastGPT({
       query: task.query,
       user: task.user,
       variables: variables
     });
-    
+
     console.log(`[定时任务] ${task.name} 执行成功，结果: ${result.substring(0, 100)}...`);
     return result;
   } catch (err) {
@@ -1132,25 +1140,25 @@ async function executeTask(task) {
 // ========== 启动定时任务 ==========
 function startScheduledTasks() {
   console.log('[服务] 开始启动定时任务...');
-  
+
   // 为每个任务类型注册定时任务
   TASK_TYPES.forEach((taskType, index) => {
     const options = TASK_TIMEZONE ? { timezone: TASK_TIMEZONE } : {};
-    
+
     cron.schedule(taskType.schedule, async () => {
       await executeScheduledTask(index);
     }, options);
-    
+
     console.log(`[服务] 已注册定时任务: ${taskType.name}, 计划: ${taskType.schedule}${TASK_TIMEZONE ? ` (时区: ${TASK_TIMEZONE})` : ''}`);
   });
-  
+
   console.log('[服务] 所有定时任务已启动（每次执行时会从 API 获取最新的用户列表）');
 }
 
 // ========== 飞书 card.action.trigger 处理函数，可复用 ==========
 async function handleFeishuCardActionTrigger(data) {
 
-  
+
   // 超时保护：确保 3 秒内一定返回
   const TIMEOUT_FLAG = '__TIMEOUT__';
   let timeoutId;
@@ -1163,168 +1171,168 @@ async function handleFeishuCardActionTrigger(data) {
 
   const handlerPromise = (async () => {
     try {
-    // 确保 data 是对象
-    if (!data || typeof data !== 'object') {
-      console.warn('[飞书回调] data 不是有效对象');
-      return {
-        toast: {
-          type: 'error',
-          content: '回调数据格式错误',
-          i18n: {
-            zh_cn: '回调数据格式错误',
-            en_us: 'invalid callback data format'
+      // 确保 data 是对象
+      if (!data || typeof data !== 'object') {
+        console.warn('[飞书回调] data 不是有效对象');
+        return {
+          toast: {
+            type: 'error',
+            content: '回调数据格式错误',
+            i18n: {
+              zh_cn: '回调数据格式错误',
+              en_us: 'invalid callback data format'
+            }
           }
-        }
-      };
-    }
-
-
-    // 兼容两种结构：
-    // 1) 文档中的 behaviors[ { type: 'callback', value: {...} } ]
-    // 2) 实际 WS 返回的 data.action.value
-    let payload = null;
-
-    try {
-      if (Array.isArray(data.behaviors)) {
-        const behaviors = data.behaviors;
-        const firstCallback = behaviors.find(
-          (b) => b && b.type === 'callback' && b.value && typeof b.value === 'object'
-        );
-        if (firstCallback) {
-          payload = firstCallback.value;
-        }
-      }
-
-      if (!payload && data.action && data.action.value && typeof data.action.value === 'object') {
-        payload = data.action.value;
-      }
-    } catch (parseErr) {
-      console.error('[飞书回调] 解析 payload 失败:', parseErr && parseErr.message ? parseErr.message : parseErr);
-      return {
-        toast: {
-          type: 'error',
-          content: '解析回调参数失败',
-          i18n: {
-            zh_cn: '解析回调参数失败',
-            en_us: 'failed to parse callback payload'
-          }
-        }
-      };
-    }
-
-    if (!payload) {
-      console.warn('[飞书回调] 未找到有效的 callback/action.value，忽略本次回调');
-      return {
-        toast: {
-          type: 'warning',
-          content: '未找到有效的卡片参数',
-          i18n: {
-            zh_cn: '未找到有效的卡片参数',
-            en_us: 'no valid card payload'
-          }
-        }
-      };
-    }
-
-    let force_add_schedule_json_body, email_account;
-    try {
-      ({ force_add_schedule_json_body, email_account } = payload || {});
-    } catch (destructErr) {
-      console.error('[飞书回调] 解构 payload 失败:', destructErr && destructErr.message ? destructErr.message : destructErr);
-      return {
-        toast: {
-          type: 'error',
-          content: '解析回调参数失败',
-          i18n: {
-            zh_cn: '解析回调参数失败',
-            en_us: 'failed to parse callback payload'
-          }
-        }
-      };
-    }
-
-    if (!email_account) {
-      console.warn('[飞书回调] 缺少 email_account，无法匹配用户');
-      return {
-        toast: {
-          type: 'warning',
-          content: '缺少邮箱账号，无法处理',
-          i18n: {
-            zh_cn: '缺少邮箱账号，无法处理',
-            en_us: 'missing email_account'
-          }
-        }
-      };
-    }
-
-    // 从 users_config.json 读取用户配置
-    let user;
-    try {
-      user = await getUserFromConfig(email_account);
-    } catch (getUserErr) {
-      console.error('[飞书回调] 获取用户配置失败:', getUserErr && getUserErr.message ? getUserErr.message : getUserErr);
-      return {
-        toast: {
-          type: 'error',
-          content: '获取用户配置失败',
-          i18n: {
-            zh_cn: '获取用户配置失败',
-            en_us: 'failed to get user config'
-          }
-        }
-      };
-    }
-
-    if (!user) {
-      console.warn('[飞书回调] 未在 users_config.json 找到对应用户:', email_account);
-      return {
-        toast: {
-          type: 'warning',
-          content: '未找到对应用户',
-          i18n: {
-            zh_cn: '未找到对应用户',
-            en_us: 'user not found'
-          }
-        }
-      };
-    }
-
-    // 为保证 3 秒内返回，这里异步调用 FastGPT，不阻塞 toast 返回
-    (async () => {
-      try {
-        const randomChatId = generateRandomChatId();
-        const client = createClient(randomChatId);
-
-        const variables = {
-          force_add_schedule_json_body,
-          email_account
         };
-
-        console.log('[飞书回调] 异步调用 FastGPT 强制添加日程, email_account:', email_account);
-
-        const result = await client.sendToFastGPT({
-          query: '强制添加日程',
-          user: email_account,
-          variables
-        });
-
-        console.log('[飞书回调] FastGPT 调用成功，结果前 100 字符:', typeof result === 'string' ? result.substring(0, 100) : '');
-      } catch (err) {
-        console.error('[飞书回调] 异步调用 FastGPT 失败:', err && err.message ? err.message : err);
       }
-    })();
 
-    // 立即返回 toast，避免超过 3 秒超时
-    return {
-      toast: {
-        type: 'success',
-        content: '已接收请求，正在添加日程',
-        i18n: {
-          zh_cn: '已接收请求，正在添加日程',
-          en_us: 'request received, adding schedule'
+
+      // 兼容两种结构：
+      // 1) 文档中的 behaviors[ { type: 'callback', value: {...} } ]
+      // 2) 实际 WS 返回的 data.action.value
+      let payload = null;
+
+      try {
+        if (Array.isArray(data.behaviors)) {
+          const behaviors = data.behaviors;
+          const firstCallback = behaviors.find(
+            (b) => b && b.type === 'callback' && b.value && typeof b.value === 'object'
+          );
+          if (firstCallback) {
+            payload = firstCallback.value;
+          }
         }
+
+        if (!payload && data.action && data.action.value && typeof data.action.value === 'object') {
+          payload = data.action.value;
+        }
+      } catch (parseErr) {
+        console.error('[飞书回调] 解析 payload 失败:', parseErr && parseErr.message ? parseErr.message : parseErr);
+        return {
+          toast: {
+            type: 'error',
+            content: '解析回调参数失败',
+            i18n: {
+              zh_cn: '解析回调参数失败',
+              en_us: 'failed to parse callback payload'
+            }
+          }
+        };
       }
-    };
+
+      if (!payload) {
+        console.warn('[飞书回调] 未找到有效的 callback/action.value，忽略本次回调');
+        return {
+          toast: {
+            type: 'warning',
+            content: '未找到有效的卡片参数',
+            i18n: {
+              zh_cn: '未找到有效的卡片参数',
+              en_us: 'no valid card payload'
+            }
+          }
+        };
+      }
+
+      let force_add_schedule_json_body, email_account;
+      try {
+        ({ force_add_schedule_json_body, email_account } = payload || {});
+      } catch (destructErr) {
+        console.error('[飞书回调] 解构 payload 失败:', destructErr && destructErr.message ? destructErr.message : destructErr);
+        return {
+          toast: {
+            type: 'error',
+            content: '解析回调参数失败',
+            i18n: {
+              zh_cn: '解析回调参数失败',
+              en_us: 'failed to parse callback payload'
+            }
+          }
+        };
+      }
+
+      if (!email_account) {
+        console.warn('[飞书回调] 缺少 email_account，无法匹配用户');
+        return {
+          toast: {
+            type: 'warning',
+            content: '缺少邮箱账号，无法处理',
+            i18n: {
+              zh_cn: '缺少邮箱账号，无法处理',
+              en_us: 'missing email_account'
+            }
+          }
+        };
+      }
+
+      // 从 users_config.json 读取用户配置
+      let user;
+      try {
+        user = await getUserFromConfig(email_account);
+      } catch (getUserErr) {
+        console.error('[飞书回调] 获取用户配置失败:', getUserErr && getUserErr.message ? getUserErr.message : getUserErr);
+        return {
+          toast: {
+            type: 'error',
+            content: '获取用户配置失败',
+            i18n: {
+              zh_cn: '获取用户配置失败',
+              en_us: 'failed to get user config'
+            }
+          }
+        };
+      }
+
+      if (!user) {
+        console.warn('[飞书回调] 未在 users_config.json 找到对应用户:', email_account);
+        return {
+          toast: {
+            type: 'warning',
+            content: '未找到对应用户',
+            i18n: {
+              zh_cn: '未找到对应用户',
+              en_us: 'user not found'
+            }
+          }
+        };
+      }
+
+      // 为保证 3 秒内返回，这里异步调用 FastGPT，不阻塞 toast 返回
+      (async () => {
+        try {
+          const randomChatId = generateRandomChatId();
+          const client = createClient(randomChatId);
+
+          const variables = {
+            force_add_schedule_json_body,
+            email_account
+          };
+
+          console.log('[飞书回调] 异步调用 FastGPT 强制添加日程, email_account:', email_account);
+
+          const result = await client.sendToFastGPT({
+            query: '强制添加日程',
+            user: email_account,
+            variables
+          });
+
+          console.log('[飞书回调] FastGPT 调用成功，结果前 100 字符:', typeof result === 'string' ? result.substring(0, 100) : '');
+        } catch (err) {
+          console.error('[飞书回调] 异步调用 FastGPT 失败:', err && err.message ? err.message : err);
+        }
+      })();
+
+      // 立即返回 toast，避免超过 3 秒超时
+      return {
+        toast: {
+          type: 'success',
+          content: '已接收请求，正在添加日程',
+          i18n: {
+            zh_cn: '已接收请求，正在添加日程',
+            en_us: 'request received, adding schedule'
+          }
+        }
+      };
     } catch (err) {
       // 最后的兜底 catch，确保任何未预料的异常都不会导致 handler 返回 undefined
       console.error('[飞书回调] 处理 card.action.trigger 失败（外层 catch）:', err && err.message ? err.message : err);
@@ -1425,7 +1433,7 @@ async function runTaskManually(taskName) {
   } else {
     // 为所有用户执行
     console.log(`[手动任务] 为所有 ${users.length} 个用户执行: ${TASK_TYPES[taskTypeIndex].name}`);
-    const promises = users.map(user => 
+    const promises = users.map(user =>
       executeTaskForUser(user.email_account, taskTypeIndex).catch(err => {
         console.error(`[ERR] 用户 ${user.email_account} 的任务执行失败:`, err.message);
       })
@@ -1440,7 +1448,7 @@ if (require.main === module) {
     console.log('[服务] FastGPT 定时任务服务启动中...');
     console.log(`[配置] FastGPT URL: ${FASTGPT_URL}`);
     console.log(`[配置] API Base URL: ${API_BASE_URL}`);
-    
+
     // 测试 API 连接（可选，用于启动时验证）
     try {
       const users = await loadUsersFromAPI();
@@ -1451,10 +1459,10 @@ if (require.main === module) {
     } catch (err) {
       console.warn('[警告] 启动时无法连接 API，但服务仍会启动（定时任务执行时会重试）');
     }
-    
+
     // 处理命令行参数
     const args = process.argv.slice(2);
-    
+
     // 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>
     if (args[0] === 'run' && args[1]) {
       console.log('[服务] 以 run 模式启动，立即建立飞书长连接...');
@@ -1471,7 +1479,7 @@ if (require.main === module) {
         console.log('\n[服务] 收到退出信号，正在关闭...');
         process.exit(0);
       });
-      
+
       process.on('SIGTERM', () => {
         console.log('\n[服务] 收到终止信号，正在关闭...');
         process.exit(0);
@@ -1486,7 +1494,7 @@ if (require.main === module) {
       });
       return;
     }
-    
+
     // 启动定时任务（每次执行时会从 API 获取最新用户列表）
     startScheduledTasks();
     // 启动邮件拉取/预处理/拼接任务
@@ -1499,13 +1507,13 @@ if (require.main === module) {
     console.log('[提示] 每次定时任务执行时会自动从 API 获取最新的用户列表');
     console.log('[提示] 使用 Ctrl+C 停止服务');
     console.log('[提示] 手动执行任务: node email_calendar_fastgpt_service.js run <任务名>');
-    
+
     // 优雅退出
     process.on('SIGINT', () => {
       console.log('\n[服务] 收到退出信号，正在关闭...');
       process.exit(0);
     });
-    
+
     process.on('SIGTERM', () => {
       console.log('\n[服务] 收到终止信号，正在关闭...');
       process.exit(0);
