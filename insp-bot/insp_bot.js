@@ -95,6 +95,33 @@ function getSafetyBotReactionOnly(groupId) {
   }
   return SAFETYBOT_REACTION_ONLY;
 }
+const GROUP_FILES_API_URL = process.env.GROUP_FILES_API_URL || '';
+
+// AdminGroups：避免 cron 叠加并发（上一轮未结束下一轮又启动）
+let _adminGroupsDownloadRunning = false;
+// SafetyBot 控制标志
+const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执行日志，不发送text或reaction
+const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
+
+// 特定群组覆盖配置：这些群组将临时禁用 SafetyBot 标志（从环境变量读取，逗号分隔）
+const SAFETYBOT_OVERRIDE_GROUPS = process.env.SAFETYBOT_OVERRIDE_GROUPS 
+  ? process.env.SAFETYBOT_OVERRIDE_GROUPS.split(',').map(g => g.trim())
+  : []; // 从环境变量读取，未配置则为空数组
+
+// 根据群组ID获取 SafetyBot 标志值（支持群组级别的覆盖）
+function getSafetyBotLogOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 LOG_ONLY
+  }
+  return SAFETYBOT_LOG_ONLY;
+}
+
+function getSafetyBotReactionOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 REACTION_ONLY
+  }
+  return SAFETYBOT_REACTION_ONLY;
+}
 // Lark 事件回调配置
 // const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
 const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
@@ -167,9 +194,23 @@ function ensureDir(dir) {
 function appendLog(groupId, message) {
   const groupDir = path.join(LOG_DIR, groupId || 'default');
   ensureDir(groupDir);
-  const dateStr = new Date().toISOString().slice(0, 10);
+
+  // 1. 获取当前时间并手动偏移 8 小时处理文件名
+  const now = new Date();
+  const utc8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+  const dateStr = utc8Time.toISOString().slice(0, 10);
+
+  // 2. 格式化日志内容的时间戳
+  // 使用 'sv-SE' (瑞典语) 是一种小技巧，它能直接得到 YYYY-MM-DD HH:mm:ss 格式，非常整齐
+  const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+  
+  try {
+    fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
+  } catch (err) {
+    console.error('Failed to write log:', err);
+  }
 }
 
 // 统一 JID
@@ -1851,7 +1892,6 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
   }
 }
 
-
 async function handleSafetyBot(client, msg, groupId, isGroup) {
   try {
     // 步骤1: 提取发送人信息（缓存以避免重复调用）
@@ -1894,11 +1934,16 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     const isImage = msg.type === 'image' || msg.type === 'album';
     const isMedia = isImage || msg.type === 'document';  // 可扩展其他媒体
     const logOnly = getSafetyBotLogOnly(groupId);
+    const logOnly = getSafetyBotLogOnly(groupId);
     if (!query.trim() || query === '[未识别内容]') {
+      if (!logOnly && (!isGroup || shouldReply(msg, BOT_NAME))) {
       if (!logOnly && (!isGroup || shouldReply(msg, BOT_NAME))) {
         await client.reply(msg.from, '未识别到有效内容。', msg.id);
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
+      } else if (logOnly) {
+        console.log('[LOG_ONLY模式] 跳过发送"未识别到有效内容"回复');
+        appendLog(groupId, '[LOG_ONLY模式] 未识别到有效内容，跳过回复');
       } else if (logOnly) {
         console.log('[LOG_ONLY模式] 跳过发送"未识别到有效内容"回复');
         appendLog(groupId, '[LOG_ONLY模式] 未识别到有效内容，跳过回复');
@@ -2132,8 +2177,6 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     appendLog(msg.from || groupId, '处理消息时发生异常');
   }
 }
-
-
 // 辅助函数：提取消息纯文本（新引入，避免污染）
 async function extractMessageText(client, msg) {
   switch (msg.type) {
@@ -2288,7 +2331,6 @@ async function handleProgressSummary(client, groupId) {
     appendLog(groupId, `[ERR] 发送 AI 进度总结失败: ${err.message}`);
   }
 }
-
 // 往日总结函数（昨日總結 + 往日總結）
 async function handlePastSummary(client, groupId) {
   try {
@@ -2504,7 +2546,6 @@ async function handleTodaySummary(client, groupId) {
     appendLog(groupId, `[ERR] 发送今日总结失败: ${err.message}`);
   }
 }
-
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
