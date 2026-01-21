@@ -293,7 +293,7 @@ async function _sendFeishuAlertToAdmin(text) {
 }
 
 // 发送每日摘要到飞书：每个 part 一条消息，按 part_1, part_2... 顺序
-async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
+async function _sendFeishuSummaryParts(emailAccount, dateStr, parts, forceSendToUser = false) {
   if (!Array.isArray(parts) || parts.length === 0) return;
   if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
     console.warn('[飞书] 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，跳过发送每日摘要');
@@ -303,20 +303,9 @@ async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
   const adminEmail = process.env.EMAIL_SUMMARY_FEISHU_EMAIL || 'yilin.wu02@cohl.com';
   const targetEmails = [adminEmail];
 
-  // 计算是否属于给本人发送的时间段（12点或18点的第一轮，即 12:00-12:04 或 18:00-18:04）
-  const hkTimeParts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: (typeof TASK_TIMEZONE !== 'undefined' ? TASK_TIMEZONE : 'Asia/Hong_Kong'),
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).formatToParts(new Date());
-  const hour = parseInt(hkTimeParts.find(p => p.type === 'hour')?.value || '0');
-  const minute = parseInt(hkTimeParts.find(p => p.type === 'minute')?.value || '0');
-  const isUserTime = (hour === 12 || hour === 18) && (minute < 1);
-
   // 检查登录状态：如果登录失败，就不发给本人
   if (_isLoginOk(emailAccount)) {
-    if (isUserTime && emailAccount && emailAccount !== adminEmail) {
+    if (forceSendToUser && emailAccount && emailAccount !== adminEmail) {
       targetEmails.push(emailAccount);
     }
   } else {
@@ -356,30 +345,33 @@ async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
 }
 
 // 从 final_result/part_*.txt 文件读取并发送每日摘要
-async function _sendFeishuSummaryFromFiles(emailAccount, dateStr) {
+async function _sendFeishuSummaryFromFiles(emailAccount, dateStr, forceSendToUser = false, filePrefix = 'part_') {
   const { finalDir } = _getUserDateDirs(emailAccount, dateStr);
   if (!fs.existsSync(finalDir)) {
     console.log(`[飞书发送] 目录不存在，跳过: ${finalDir}`);
     return;
   }
 
-  // 读取所有 part_*.txt 文件，按数字排序
+  // 读取所有对应的 part 文件，按数字排序
   const partFiles = [];
   try {
+    const regex = new RegExp(`^${filePrefix}(\\d+)\\.txt$`, 'i');
     for (const fn of fs.readdirSync(finalDir)) {
-      const m = fn.match(/^part_(\d+)\.txt$/i);
+      const m = fn.match(regex);
       if (m) {
         const num = Number.parseInt(m[1], 10);
         partFiles.push({ num, path: path.join(finalDir, fn) });
       }
     }
   } catch (e) {
-    console.error('[飞书发送] 读取 finalDir 失败:', finalDir, e && e.message ? e.message : e);
+    console.error(`[飞书发送] 读取 finalDir 失败 (${filePrefix}):`, finalDir, e && e.message ? e.message : e);
     return;
   }
 
   if (partFiles.length === 0) {
-    console.log(`[飞书发送] 未找到 part_*.txt 文件: ${finalDir}`);
+    if (filePrefix === 'part_') {
+      console.log(`[飞书发送] 未找到 part_*.txt 文件: ${finalDir}`);
+    }
     return;
   }
 
@@ -423,7 +415,7 @@ async function _sendFeishuSummaryFromFiles(emailAccount, dateStr) {
   }
 
   // 调用发送函数
-  await _sendFeishuSummaryParts(emailAccount, dateStr, parts);
+  await _sendFeishuSummaryParts(emailAccount, dateStr, parts, forceSendToUser);
 }
 
 function _extractPluginOutputFromFastGPTContent(rawText) {
@@ -789,18 +781,24 @@ async function buildFinalPartsForUserDate(emailAccount, dateStr) {
   if (!fs.existsSync(txtDir)) return { parts: 0, mails: 0 };
 
   // 读取所有 txt_result，按 id 倒序
-  const pairs = []; // {idInt, outputText}
+  const pairs = []; // {idInt, outputText, isAfter18}
   for (const fn of fs.readdirSync(txtDir)) {
     if (!fn.toLowerCase().endsWith('.txt')) continue;
     const m = fn.match(/^(\d+)_/);
     if (!m) continue;
     const idInt = Number.parseInt(m[1], 10);
+
+    // 提取时间判断是否 18:00 后
+    const timeMatch = fn.match(/--- \d{4}-\d{2}-\d{2} (\d{2})\d{3}/);
+    const hh = timeMatch ? parseInt(timeMatch[1], 10) : 0;
+    const isAfter18 = hh >= 18;
+
     const fp = path.join(txtDir, fn);
     try {
       const raw = fs.readFileSync(fp, 'utf8');
       const out = _extractPluginOutputFromFastGPTContent(raw);
       if (typeof out === 'string' && out.trim()) {
-        pairs.push({ idInt: Number.isFinite(idInt) ? idInt : 0, out });
+        pairs.push({ idInt: Number.isFinite(idInt) ? idInt : 0, out, isAfter18 });
       }
     } catch (e) {
       console.error('[final_result] 读取 txt 失败:', fp, e && e.message ? e.message : e);
@@ -808,72 +806,68 @@ async function buildFinalPartsForUserDate(emailAccount, dateStr) {
   }
   pairs.sort((a, b) => (b.idInt || 0) - (a.idInt || 0));
 
-  const header = `<b>今日摘要报告（${dateStr}）</b>`;
-  const blocks = pairs.map((p, idx) => `<b>${idx + 1}.</b> ${p.out}`);
+  const writeReportParts = (mailList, prefix, header) => {
+    // 除了主报告 part_，其他空列表不生成文件
+    if (mailList.length === 0 && prefix !== 'part_') return 0;
 
-  const parts = [];
-  let cur = [];
+    // 清理旧前缀文件
+    try {
+      for (const fn of fs.readdirSync(finalDir)) {
+        if (fn.startsWith(prefix) && fn.endsWith('.txt')) {
+          fs.unlinkSync(path.join(finalDir, fn));
+        }
+      }
+    } catch (_) { }
 
-  const flush = () => {
-    const body = cur.length ? `\n${cur.join('\n\n')}` : '';
-    parts.push(header + body);
-    cur = [];
+    const blocks = mailList.map((p, idx) => `<b>${idx + 1}.</b> ${p.out}`);
+    const parts = [];
+    let cur = [];
+    const flush = () => {
+      const body = cur.length ? `\n${cur.join('\n\n')}` : '';
+      parts.push(header + body);
+      cur = [];
+    };
+
+    for (const block of blocks) {
+      const candidateBlocks = cur.concat([block]);
+      const candidateText = header + '\n' + candidateBlocks.join('\n\n');
+      const candidateLine = _makeContentLineFromText(candidateText);
+      if (_byteLenUtf8(candidateLine) <= EMAIL_FINAL_MAX_BYTES) {
+        cur.push(block);
+        continue;
+      }
+      if (cur.length) flush();
+      const singleText = header + '\n' + block;
+      const singleLine = _makeContentLineFromText(singleText);
+      if (_byteLenUtf8(singleLine) <= EMAIL_FINAL_MAX_BYTES) {
+        cur.push(block);
+        continue;
+      }
+      let truncated = singleText;
+      const suffix = '\n...（内容过长已截断）';
+      while (_byteLenUtf8(_makeContentLineFromText(truncated + suffix)) > EMAIL_FINAL_MAX_BYTES && truncated.length > 1000) {
+        truncated = truncated.slice(0, Math.floor(truncated.length * 0.9));
+      }
+      parts.push(truncated + suffix);
+    }
+    if (cur.length || parts.length === 0) flush();
+
+    let idx = 1;
+    for (const text of parts) {
+      const line = _makeContentLineFromText(text);
+      const outPath = path.join(finalDir, `${prefix}${idx}.txt`);
+      fs.writeFileSync(outPath, line + '\n', { encoding: 'utf8' });
+      idx += 1;
+    }
+    return parts.length;
   };
 
-  for (const block of blocks) {
-    // 试探加入当前 part
-    const candidateBlocks = cur.concat([block]);
-    const candidateText = header + '\n' + candidateBlocks.join('\n\n');
-    const candidateLine = _makeContentLineFromText(candidateText);
-    if (_byteLenUtf8(candidateLine) <= EMAIL_FINAL_MAX_BYTES) {
-      cur.push(block);
-      continue;
-    }
+  // 生成主报告
+  const totalParts = writeReportParts(pairs, 'part_', `<b>今日摘要报告（${dateStr}）</b>`);
+  // 生成 18 点后的余量报告
+  const after18PartsCount = writeReportParts(pairs.filter(p => p.isAfter18), 'after18_part_', `<b>昨日余量摘要（${dateStr} 18:00后）</b>`);
 
-    // 当前 part 放不下这个 block：先把已有的 flush，再尝试单独放
-    if (cur.length) flush();
-
-    const singleText = header + '\n' + block;
-    const singleLine = _makeContentLineFromText(singleText);
-    if (_byteLenUtf8(singleLine) <= EMAIL_FINAL_MAX_BYTES) {
-      cur.push(block);
-      continue;
-    }
-
-    // 兜底：单封邮件也超过 140KB，只能截断（尽量不破坏 UTF-8）
-    console.warn('[final_result] 单封邮件摘要过大，触发截断:', emailAccount, dateStr);
-    let truncated = singleText;
-    // 保留末尾提示
-    const suffix = '\n...（内容过长已截断）';
-    while (_byteLenUtf8(_makeContentLineFromText(truncated + suffix)) > EMAIL_FINAL_MAX_BYTES && truncated.length > 1000) {
-      truncated = truncated.slice(0, Math.floor(truncated.length * 0.9));
-    }
-    parts.push(truncated + suffix);
-  }
-
-  if (cur.length || parts.length === 0) {
-    flush();
-  }
-
-  // 写出 part_1.txt, part_2.txt...
-  // 先清理旧文件
-  try {
-    for (const fn of fs.readdirSync(finalDir)) {
-      if (/^part_\d+\.txt$/i.test(fn)) {
-        fs.unlinkSync(path.join(finalDir, fn));
-      }
-    }
-  } catch (_) { }
-
-  let idx = 1;
-  for (const text of parts) {
-    const line = _makeContentLineFromText(text);
-    const outPath = path.join(finalDir, `part_${idx}.txt`);
-    fs.writeFileSync(outPath, line + '\n', { encoding: 'utf8' });
-    idx += 1;
-  }
-
-  return { parts: parts.length, mails: pairs.length };
+  return { parts: totalParts, mails: pairs.length, after18PartsCount };
 }
 
 async function runEmailPipelinePull() {
@@ -957,15 +951,47 @@ async function runEmailPipelineSendSummary() {
   try {
     const users = await loadUsersFromAPI();
     if (!users || users.length === 0) return;
-    const dateStr = _hkDateStr(new Date());
+
+    const now = new Date();
+    const today = _hkDateStr(now);
+
+    // 计算当前是否为本人接收的时间窗口（12:00 或 18:00 的第一轮）
+    const hkTimeParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: (typeof TASK_TIMEZONE !== 'undefined' ? TASK_TIMEZONE : 'Asia/Hong_Kong'),
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(now);
+    const hour = parseInt(hkTimeParts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(hkTimeParts.find(p => p.type === 'minute')?.value || '0');
+
+    const is1200 = (hour === 12 && minute < 1);
+    const is1800 = (hour === 18 && minute < 1);
+    const forceSendToUser = is1200 || is1800;
+
     for (const u of users) {
       try {
-        await _sendFeishuSummaryFromFiles(u.email_account, dateStr);
+        if (is1200) {
+          // 12点窗口：
+          // 1. 先发昨天 18点后的余量
+          const yesterdayRaw = new Date(now.getTime() - 24 * 3600 * 1000);
+          const yesterday = _hkDateStr(yesterdayRaw);
+          console.log(`[emails][summary_send] 12点窗口：发送昨日余量(>18:00): ${u.email_account}, 日期: ${yesterday}`);
+          await _sendFeishuSummaryFromFiles(u.email_account, yesterday, true, 'after18_part_');
+
+          // 2. 再发今天 12点前的摘要
+          console.log(`[emails][summary_send] 12点窗口：发送今日上午摘要: ${u.email_account}, 日期: ${today}`);
+          await _sendFeishuSummaryFromFiles(u.email_account, today, true, 'part_');
+        } else {
+          // 18点窗口（或其他时间轮询）：正常发送今日摘要
+          // 如果是18:00，forceSendToUser 为 true 会发送给本人
+          await _sendFeishuSummaryFromFiles(u.email_account, today, forceSendToUser, 'part_');
+        }
       } catch (e) {
         console.error('[emails][summary_send] 用户失败:', u.email_account, e && e.message ? e.message : e);
       }
     }
-    console.log(`[emails][summary_send] 完成（日期: ${dateStr}）`);
+    console.log(`[emails][summary_send] 完成（日期: ${today}）`);
   } finally {
     emailSummarySendRunning = false;
   }
