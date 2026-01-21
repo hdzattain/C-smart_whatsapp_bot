@@ -34,7 +34,7 @@ const EMAIL_DATA_DIR = process.env.EMAIL_DATA_DIR
 const EMAIL_PULL_CRON = process.env.EMAIL_PULL_CRON || '*/5 * * * *';
 const EMAIL_PROCESS_CRON = process.env.EMAIL_PROCESS_CRON || '*/5 * * * *';
 const EMAIL_BUILD_CRON = process.env.EMAIL_BUILD_CRON || '*/5 * * * *';
-const EMAIL_SUMMARY_SEND_CRON = process.env.EMAIL_SUMMARY_SEND_CRON || '*/15 * * * *'; // 每天12点和18点
+const EMAIL_SUMMARY_SEND_CRON = process.env.EMAIL_SUMMARY_SEND_CRON || '*/5 * * * *'; // 管理员每5分钟一次，本人12点和18点
 const EMAIL_PULL_RECEIVE_NUMBER = Number.parseInt(process.env.EMAIL_PULL_RECEIVE_NUMBER || '50', 10);
 const EMAIL_PULL_UNREAD_ONLY = (process.env.EMAIL_PULL_UNREAD_ONLY || 'true').toLowerCase() !== 'false';
 const EMAIL_PULL_TODAY_ONLY = (process.env.EMAIL_PULL_TODAY_ONLY || 'true').toLowerCase() !== 'false';
@@ -79,6 +79,32 @@ function _ensureDirSync(dirPath) {
 
 function _emailDirName(emailAccount) {
   return _safeStr(emailAccount).replace(/[\/\\]/g, '_');
+}
+
+function _getLoginStatusPath(emailAccount) {
+  return path.join(EMAIL_DATA_DIR, _emailDirName(emailAccount), 'last_login_status.json');
+}
+
+function _setLoginStatus(emailAccount, ok) {
+  try {
+    const filePath = _getLoginStatusPath(emailAccount);
+    _ensureDirSync(path.dirname(filePath));
+    fs.writeFileSync(filePath, JSON.stringify({ ok, timestamp: Date.now() }));
+  } catch (e) {
+    console.error('[status] 记录登录状态失败:', emailAccount, e.message);
+  }
+}
+
+function _isLoginOk(emailAccount) {
+  try {
+    const filePath = _getLoginStatusPath(emailAccount);
+    if (!fs.existsSync(filePath)) return true; // 默认允许
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(raw);
+    return data && data.ok !== false;
+  } catch (e) {
+    return true;
+  }
 }
 
 function _sanitizeFilenameComponent(name, maxLen = 80) {
@@ -273,39 +299,59 @@ async function _sendFeishuSummaryParts(emailAccount, dateStr, parts) {
     console.warn('[飞书] 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，跳过发送每日摘要');
     return;
   }
-  // const targetEmail = emailAccount;
-  const targetEmail = process.env.EMAIL_SUMMARY_FEISHU_EMAIL || 'yilin.wu02@cohl.com';
 
-  // 为发送摘要单独创建一个客户端（自动管理 token）
+  const adminEmail = process.env.EMAIL_SUMMARY_FEISHU_EMAIL || 'yilin.wu02@cohl.com';
+  const targetEmails = [adminEmail];
+
+  // 计算是否属于给本人发送的时间段（12点或18点的第一轮，即 12:00-12:04 或 18:00-18:04）
+  const hkTimeParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: (typeof TASK_TIMEZONE !== 'undefined' ? TASK_TIMEZONE : 'Asia/Hong_Kong'),
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const hour = parseInt(hkTimeParts.find(p => p.type === 'hour')?.value || '0');
+  const minute = parseInt(hkTimeParts.find(p => p.type === 'minute')?.value || '0');
+  const isUserTime = (hour === 12 || hour === 18) && (minute < 1);
+
+  // 检查登录状态：如果登录失败，就不发给本人
+  if (_isLoginOk(emailAccount)) {
+    if (isUserTime && emailAccount && emailAccount !== adminEmail) {
+      targetEmails.push(emailAccount);
+    }
+  } else {
+    console.warn(`[飞书] 用户 ${emailAccount} 最近登录失败，本次摘要将仅发送给管理员，不发给本人`);
+  }
+
   const client = new Lark.Client({
     appId: FEISHU_APP_ID,
     appSecret: FEISHU_APP_SECRET,
     disableTokenCache: false
   });
 
-  let idx = 1;
-  for (const text of parts) {
-    if (!text || typeof text !== 'string') {
+  for (const targetEmail of targetEmails) {
+    let idx = 1;
+    for (const text of parts) {
+      if (!text || typeof text !== 'string') {
+        idx += 1;
+        continue;
+      }
+      const content = JSON.stringify({ text });
+      try {
+        await client.im.v1.message.create({
+          params: { receive_id_type: 'email' },
+          data: {
+            receive_id: targetEmail,
+            msg_type: 'text',
+            content
+          }
+        });
+        console.log(`[飞书] 已发送每日摘要 part_${idx} 给 ${targetEmail}（用户: ${emailAccount}, 日期: ${dateStr}）`);
+      } catch (e) {
+        console.error('[飞书] 发送每日摘要失败:', targetEmail, emailAccount, dateStr, `part_${idx}`, e && e.message ? e.message : e);
+      }
       idx += 1;
-      continue;
     }
-    const content = JSON.stringify({ text });
-    try {
-      await client.im.v1.message.create({
-        params: {
-          receive_id_type: 'email'
-        },
-        data: {
-          receive_id: targetEmail,
-          msg_type: 'text',
-          content
-        }
-      });
-      console.log(`[飞书] 已发送每日摘要 part_${idx} 给 ${targetEmail}（用户: ${emailAccount}, 日期: ${dateStr}）`);
-    } catch (e) {
-      console.error('[飞书] 发送每日摘要失败:', emailAccount, dateStr, `part_${idx}`, e && e.message ? e.message : e);
-    }
-    idx += 1;
   }
 }
 
@@ -846,8 +892,10 @@ async function runEmailPipelinePull() {
       try {
         const r = await pullEmailsToDiskForUser(u.email_account, u.email_password);
         totalSaved += (r.saved || 0);
+        _setLoginStatus(u.email_account, true);
       } catch (e) {
         console.error('[emails][pull] 用户失败:', u.email_account, e && e.message ? e.message : e);
+        _setLoginStatus(u.email_account, false);
         // IMAP 登录或拉取失败时，给管理员发一条飞书告警
         const msg = `[邮箱拉取失败]\n用户: ${u.email_account}\n错误: ${e && e.message ? e.message : String(e)}`;
         try {
