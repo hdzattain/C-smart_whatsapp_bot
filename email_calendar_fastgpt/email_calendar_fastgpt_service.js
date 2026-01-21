@@ -492,6 +492,7 @@ async function _fetchEmailsViaImap(emailAccount, emailPassword) {
     host: IMAP_SERVER,
     port: IMAP_PORT,
     secure: IMAP_SECURE,
+    logger: false,
     auth: {
       user: emailAccount,
       pass: emailPassword
