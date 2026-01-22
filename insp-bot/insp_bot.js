@@ -2019,35 +2019,26 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
           return;
         }
 
-        // 特殊消息处理：如果包含特定的失败提示或不一致提示，则回复对应内容并发送 reaction
-        if (replyStr && (
-          replyStr.includes('失败（同時包含完成和檢視，請分開發送）') ||
-          replyStr.includes('失败（原始文本與引用文本不一致）')
-        )) {
-          let errorReply = '';
-          if (replyStr.includes('失败（原始文本與引用文本不一致）')) {
-            errorReply = '當前項目與引用項目不一致，請保持引用項目和當前檢視或整改項目一致';
-          } else {
-            const match = replyStr.match(/失败[（(](.*?)[）)]/);
-            errorReply = match ? match[1] : '';
-          }
+        // 1. 如果是闲聊消息，直接返回（优先级高）
+        if (replyStr && (replyStr.includes('闲聊消息') || replyStr.trim() === '闲聊消息')) {
+          console.log('[SafetyBot] 检测到闲聊消息，跳过回复/反应');
+          appendLog(groupId, `[SafetyBot] 检测到闲聊消息，跳过回复/反应: ${replyStr}`);
+          return;
+        }
 
+        // 2. 特殊消息处理：如果包含失败提示，则回复括号内的内容并发送 reaction
+        const failureMatch = replyStr && replyStr.match(/失败[（(](.+?)[）)]/);
+        if (failureMatch && failureMatch[1]) {
+          const errorReply = failureMatch[1].trim();
           if (errorReply) {
-            console.log(`[SafetyBot] 匹配到特殊错误消息，回复: ${errorReply}`);
-            appendLog(groupId, `[SafetyBot] 匹配到特殊错误消息，回复: ${errorReply}`);
-            if (!reactionOnly || !logOnly) {
+            console.log(`[SafetyBot] 匹配到失败消息，回复: ${errorReply}`);
+            appendLog(groupId, `[SafetyBot] 匹配到失败消息，回复: ${errorReply}`);
+            if (!reactionOnly) {
               await client.reply(msg.from, errorReply, msg.id);
             }
             await client.sendReactionToMessage(msg.id, '❌');
             return;
           }
-        }
-
-        // 如果机器人的回复是"闲聊消息"（且不是上述失败格式），则不回复也不发 reaction
-        if (replyStr && (replyStr.includes('闲聊消息') || replyStr.trim() === '闲聊消息')) {
-          console.log('[SafetyBot] 检测到闲聊消息，跳过回复/反应');
-          appendLog(groupId, `[SafetyBot] 检测到闲聊消息，跳过回复/反应: ${replyStr}`);
-          return;
         }
 
         // 检查是否包含日期分段标记
