@@ -2027,7 +2027,7 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
         }
 
         // 2. 特殊消息处理：如果包含失败提示，则回复括号内的内容并发送 reaction
-        const failureMatch = replyStr && replyStr.match(/失败[（(](.+?)[）)]/);
+        const failureMatch = replyStr && replyStr.match(/[失失][败敗]\s*[（(]([\s\S]+?)[）)]/u);
         if (failureMatch && failureMatch[1]) {
           const errorReply = failureMatch[1].trim();
           if (errorReply) {
@@ -2039,6 +2039,10 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             await client.sendReactionToMessage(msg.id, '❌');
             return;
           }
+        } else if (replyStr && (replyStr.includes('失败') || replyStr.includes('失敗')) && (replyStr.includes('（') || replyStr.includes('('))) {
+          // 兜底逻辑：如果包含失败和括号，但正则没匹配上，记录一下原因
+          console.log(`[SafetyBot] 检测到可能的失败消息但正则匹配失败: "${replyStr}"`);
+          appendLog(groupId, `[SafetyBot] 检测到可能的失败消息但正则匹配失败: "${replyStr}"`);
         }
 
         // 检查是否包含日期分段标记
@@ -2091,10 +2095,10 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
         } else {
           // 原有的逻辑：检查 FastGPT 返回内容是否包含"成功"或"失败"
           let reactionEmoji = null;
-          const hasCreateSuccess = replyStr.includes('創建成功');
+          const hasCreateSuccess = replyStr.includes('創建成功') || replyStr.includes('创建成功');
           if (replyStr.includes('成功')) {
             reactionEmoji = '✅';
-          } else if (replyStr.includes('失败')) {
+          } else if (replyStr.includes('失败') || replyStr.includes('失敗')) {
             reactionEmoji = '❌';
           }
 
