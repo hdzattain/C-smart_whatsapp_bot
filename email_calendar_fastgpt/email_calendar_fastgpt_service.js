@@ -371,6 +371,8 @@ async function _sendFeishuSummaryFromFiles(emailAccount, dateStr, forceSendToUse
   if (partFiles.length === 0) {
     if (filePrefix === 'part_') {
       console.log(`[飞书发送] 未找到 part_*.txt 文件: ${finalDir}`);
+    } else if (filePrefix === 'after18_part_') {
+      console.log(`[飞书发送] 未找到 after18_part_*.txt 文件（昨天18点后无邮件）: ${finalDir}`);
     }
     return;
   }
