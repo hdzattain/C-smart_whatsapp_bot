@@ -894,8 +894,13 @@ async function runEmailPipelinePull() {
         _setLoginStatus(u.email_account, false);
 
         let alertContent = '';
-        if (errMsg.toUpperCase().includes('LOGIN FAILED') || errMsg.toUpperCase().includes('AUTHENTICATION FAILED')) {
-          alertContent = `账户或密码错误，请重新授权。授权链接：http://43.154.37.138:3008/chat/share?shareId=rOxZGdB9ZRQA5z3yFCk9KrBH&showHistory=0`;
+        const upperMsg = errMsg.toUpperCase();
+        if (
+          upperMsg.includes('LOGIN FAILED') ||
+          upperMsg.includes('AUTHENTICATION FAILED') ||
+          upperMsg.includes('COMMAND FAILED')
+        ) {
+          alertContent = `账户或密码错误（或认证失效），请重新授权。授权链接：http://43.154.37.138:3008/chat/share?shareId=rOxZGdB9ZRQA5z3yFCk9KrBH&showHistory=0`;
         } else {
           alertContent = `服务器错误，请联系IT部同事或邮件机器人负责人解决（错误详情: ${errMsg}）`;
         }
