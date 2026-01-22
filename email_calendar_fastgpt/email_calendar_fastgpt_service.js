@@ -449,16 +449,6 @@ function _getUserDateDirs(emailAccount, dateStr) {
   };
 }
 
-async function _fetchEmailsFromMailApi(emailAccount) {
-  if (!API_BASE_URL) throw new Error('缺少配置：API_BASE_URL');
-  throw new Error('_fetchEmailsFromMailApi 已废弃：请使用 _fetchEmailsFromMailApiWithPassword');
-}
-
-async function _fetchEmailsFromMailApiWithPassword(emailAccount, emailPassword) {
-  // 已不再使用：需求改为 Node 直连 IMAP（不靠 /mail/receive 接口）
-  throw new Error('_fetchEmailsFromMailApiWithPassword 已废弃：请使用 _fetchEmailsViaImap');
-}
-
 async function loadUsersWithCredentialsFromAPI() {
   if (!CREDENTIALS_API_BASE_URL) throw new Error('缺少配置：CREDENTIALS_API_BASE_URL 或 API_BASE_URL');
   const url = EMAIL_USE_PLAINTEXT_PASSWORD
@@ -542,7 +532,16 @@ async function _fetchEmailsViaImap(emailAccount, emailPassword) {
   const receiveNumber = Number.isFinite(EMAIL_PULL_RECEIVE_NUMBER) ? EMAIL_PULL_RECEIVE_NUMBER : 50;
   const mailbox = EMAIL_MAILBOX || 'inbox';
 
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (e) {
+    const errMsg = (e && e.message ? e.message : String(e)).toUpperCase();
+    if (errMsg.includes('LOGIN FAILED') || errMsg.includes('AUTHENTICATION FAILED') || errMsg.includes('INVALID CREDENTIALS')) {
+      throw new Error(`LOGIN FAILED: ${e.message || '账户或密码错误'}`);
+    }
+    throw e;
+  }
+
   const lock = await client.getMailboxLock(mailbox);
   try {
     // Exchange + imapflow：优先使用 object 查询（更稳定），必要时 fallback 到数组语法
@@ -890,10 +889,19 @@ async function runEmailPipelinePull() {
         totalSaved += (r.saved || 0);
         _setLoginStatus(u.email_account, true);
       } catch (e) {
-        console.error('[emails][pull] 用户失败:', u.email_account, e && e.message ? e.message : e);
+        const errMsg = e && e.message ? e.message : String(e);
+        console.error('[emails][pull] 用户失败:', u.email_account, errMsg);
         _setLoginStatus(u.email_account, false);
+
+        let alertContent = '';
+        if (errMsg.toUpperCase().includes('LOGIN FAILED') || errMsg.toUpperCase().includes('AUTHENTICATION FAILED')) {
+          alertContent = `账户或密码错误，请重新授权。授权链接：http://43.154.37.138:3008/chat/share?shareId=rOxZGdB9ZRQA5z3yFCk9KrBH&showHistory=0`;
+        } else {
+          alertContent = `服务器错误，请联系IT部同事或邮件机器人负责人解决（错误详情: ${errMsg}）`;
+        }
+
         // IMAP 登录或拉取失败时，给管理员发一条飞书告警
-        const msg = `[邮箱拉取失败]\n用户: ${u.email_account}\n错误: ${e && e.message ? e.message : String(e)}`;
+        const msg = `[邮箱拉取失败]\n用户: ${u.email_account}\n提示: ${alertContent}`;
         try {
           await _sendFeishuAlertToAdmin(msg);
         } catch (_) { }
