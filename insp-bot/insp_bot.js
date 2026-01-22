@@ -2020,7 +2020,7 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
         }
 
         // 1. 如果是闲聊消息，直接返回（优先级高）
-        if (replyStr && (replyStr.includes('闲聊消息') || replyStr.trim() === '闲聊消息')) {
+        if (replyStr && (replyStr.includes('闲聊消息') || replyStr.includes('閑聊消息') || replyStr.trim() === '闲聊消息' || replyStr.trim() === '閑聊消息')) {
           console.log('[SafetyBot] 检测到闲聊消息，跳过回复/反应');
           appendLog(groupId, `[SafetyBot] 检测到闲聊消息，跳过回复/反应: ${replyStr}`);
           return;
