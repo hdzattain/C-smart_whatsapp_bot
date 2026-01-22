@@ -606,6 +606,34 @@ def send_email_smtp(
         raise RuntimeError(f"SMTP 发送失败: {str(e)}") from e
 
 
+def test_email_login(email_account, email_password, imap_server=None, imap_port=None):
+    """
+    测试邮箱账号和密码是否能成功登录 IMAP 服务器
+    - 返回: (success: bool, error_message: str)
+    """
+    mail = None
+    try:
+        imap_server = imap_server or DEFAULT_IMAP_SERVER
+        imap_port = imap_port or DEFAULT_IMAP_PORT
+        
+        if not imap_server:
+            return False, "缺少 IMAP 服务器配置"
+        
+        mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=10)
+        mail.login(email_account, email_password)
+        return True, ""
+    except imaplib.IMAP4.error as e:
+        return False, f"IMAP 登录失败: {str(e)}"
+    except Exception as e:
+        return False, f"登录测试失败: {str(e)}"
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+
 def mark_emails_unread_imap(
     email_account,
     email_password,
@@ -2500,6 +2528,13 @@ def _insert_one_email_account(data: dict):
         encrypted_password = encrypt_password(password)
     except Exception as e:
         return {"error": f"密码加密失败: {str(e)}"}
+
+    # 测试邮箱登录
+    imap_server = data.get("imap_server") or DEFAULT_IMAP_SERVER
+    imap_port = data.get("imap_port") or DEFAULT_IMAP_PORT
+    login_success, login_error = test_email_login(email_account, password, imap_server, imap_port)
+    if not login_success:
+        return {"status": "login fail", "error": login_error}
 
     # 检查是否已存在
     check_sql = f"SELECT `id` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
