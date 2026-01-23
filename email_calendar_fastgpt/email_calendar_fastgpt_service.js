@@ -371,8 +371,8 @@ async function _sendFeishuSummaryFromFiles(emailAccount, dateStr, forceSendToUse
   if (partFiles.length === 0) {
     if (filePrefix === 'part_') {
       console.log(`[飞书发送] 未找到 part_*.txt 文件: ${finalDir}`);
-    } else if (filePrefix === 'after18_part_') {
-      console.log(`[飞书发送] 未找到 after18_part_*.txt 文件（昨天18点后无邮件）: ${finalDir}`);
+    } else if (filePrefix === 'after1800_part_') {
+      console.log(`[飞书发送] 未找到 after1800_part_*.txt 文件（昨天18点后无邮件）: ${finalDir}`);
     }
     return;
   }
@@ -720,9 +720,9 @@ async function generateTxtResultsForUserDate(emailAccount, dateStr) {
     tasks.push({ id, meta });
   }
 
-  if (tasks.length === 0) return { generated, skipped };
+  if (tasks.length === 0) return { generated, skipped, tasksCount: 0 };
 
-  console.log(`[txt_result] 并发生成：user=${emailAccount}, date=${dateStr}, tasks=${tasks.length}, workers=${EMAIL_FASTGPT_MAX_WORKERS}`);
+  console.log(`[txt_result] 检测到待处理邮件：user=${emailAccount}, date=${dateStr}, count=${tasks.length}`);
 
   const results = await _asyncPool(EMAIL_FASTGPT_MAX_WORKERS, tasks, async (t) => {
     const { id, meta } = t;
@@ -789,8 +789,9 @@ async function buildFinalPartsForUserDate(emailAccount, dateStr) {
     if (!m) continue;
     const idInt = Number.parseInt(m[1], 10);
 
-    // 提取时间判断是否 18:00 后
-    const timeMatch = fn.match(/--- \d{4}-\d{2}-\d{2} (\d{2})\d{3}/);
+    // 提取时间判断是否 18:00 后（支持 19400 -> 19时）
+    // 正则改为匹配日期后的 2 位小时数，允许空格数量变化
+    const timeMatch = fn.match(/--- \d{4}-\d{2}-\d{2}\s+(\d{2})\d{3}/);
     const hh = timeMatch ? parseInt(timeMatch[1], 10) : 0;
     const isAfter18 = hh >= 18;
 
@@ -865,8 +866,8 @@ async function buildFinalPartsForUserDate(emailAccount, dateStr) {
 
   // 生成主报告
   const totalParts = writeReportParts(pairs, 'part_', `<b>今日摘要报告（${dateStr}）</b>`);
-  // 生成 18 点后的余量报告
-  const after18PartsCount = writeReportParts(pairs.filter(p => p.isAfter18), 'after18_part_', `<b>昨日余量摘要（${dateStr} 18:00后）</b>`);
+  // 生成 18 点后的余量报告（统一前缀为 after1800_part_）
+  const after18PartsCount = writeReportParts(pairs.filter(p => p.isAfter18), 'after1800_part_', `<b>昨日余量摘要（${dateStr} 18:00后）</b>`);
 
   return { parts: totalParts, mails: pairs.length, after18PartsCount };
 }
@@ -928,11 +929,21 @@ async function runEmailPipelineProcessTxt() {
   try {
     const users = await loadUsersFromAPI();
     if (!users || users.length === 0) return;
-    const dateStr = _hkDateStr(new Date());
-    for (const u of users) {
-      await generateTxtResultsForUserDate(u.email_account, dateStr);
+
+    // 同时处理“今天”和“昨天”，确保跨天或延迟邮件也能被处理
+    const now = new Date();
+    const dates = [_hkDateStr(now), _hkDateStr(new Date(now.getTime() - 24 * 3600 * 1000))];
+
+    for (const dateStr of dates) {
+      console.log(`[emails][txt_result] 开始检查日期: ${dateStr}`);
+      for (const u of users) {
+        const res = await generateTxtResultsForUserDate(u.email_account, dateStr);
+        if (res.tasksCount > 0) {
+          console.log(`[emails][txt_result]   - 用户 ${u.email_account}: 发现了 ${res.tasksCount} 封新邮件，已成功生成 ${res.generated} 份摘要`);
+        }
+      }
     }
-    console.log(`[emails][txt_result] 完成（日期: ${dateStr}）`);
+    console.log(`[emails][txt_result] 流水线周期结束`);
   } finally {
     emailProcessRunning = false;
   }
@@ -947,11 +958,21 @@ async function runEmailPipelineBuildFinal() {
   try {
     const users = await loadUsersFromAPI();
     if (!users || users.length === 0) return;
-    const dateStr = _hkDateStr(new Date());
-    for (const u of users) {
-      await buildFinalPartsForUserDate(u.email_account, dateStr);
+
+    // 同时处理“今天”和“昨天”，确保跨天或延迟生成的 txt_result 能被计入 final_result
+    const now = new Date();
+    const dates = [_hkDateStr(now), _hkDateStr(new Date(now.getTime() - 24 * 3600 * 1000))];
+
+    for (const dateStr of dates) {
+      console.log(`[emails][final_result] 开始检查并构建报告: ${dateStr}`);
+      for (const u of users) {
+        const res = await buildFinalPartsForUserDate(u.email_account, dateStr);
+        if (res && res.after18PartsCount > 0) {
+          console.log(`[emails][final_result]   - 用户 ${u.email_account} 已生成昨日余量报告 (${res.after18PartsCount} 个 part)`);
+        }
+      }
     }
-    console.log(`[emails][final_result] 完成（日期: ${dateStr}）`);
+    console.log(`[emails][final_result] 流水线周期结束`);
   } finally {
     emailBuildRunning = false;
   }
@@ -969,6 +990,8 @@ async function runEmailPipelineSendSummary() {
 
     const now = new Date();
     const today = _hkDateStr(now);
+    const yesterdayRaw = new Date(now.getTime() - 24 * 3600 * 1000);
+    const yesterday = _hkDateStr(yesterdayRaw);
 
     // 计算当前是否为本人接收的时间窗口（12:00 或 18:00 的第一轮）
     const hkTimeParts = new Intl.DateTimeFormat('en-GB', {
@@ -989,18 +1012,21 @@ async function runEmailPipelineSendSummary() {
         if (is1200) {
           // 12点窗口：
           // 1. 先发昨天 18点后的余量
-          const yesterdayRaw = new Date(now.getTime() - 24 * 3600 * 1000);
-          const yesterday = _hkDateStr(yesterdayRaw);
           console.log(`[emails][summary_send] 12点窗口：发送昨日余量(>18:00): ${u.email_account}, 日期: ${yesterday}`);
-          await _sendFeishuSummaryFromFiles(u.email_account, yesterday, true, 'after18_part_');
+          await _sendFeishuSummaryFromFiles(u.email_account, yesterday, true, 'after1800_part_');
 
           // 2. 再发今天 12点前的摘要
           console.log(`[emails][summary_send] 12点窗口：发送今日上午摘要: ${u.email_account}, 日期: ${today}`);
           await _sendFeishuSummaryFromFiles(u.email_account, today, true, 'part_');
         } else {
-          // 18点窗口（或其他时间轮询）：正常发送今日摘要
-          // 如果是18:00，forceSendToUser 为 true 会发送给本人
+          // 18点窗口或普通 5 分钟轮询
+          // 1. 发送今日摘要 (part_*) -> 管理员每 5 分钟看一次，本人 18:00 看一次
           await _sendFeishuSummaryFromFiles(u.email_account, today, forceSendToUser, 'part_');
+
+          // 2. 如果是 12:00 之前的轮询，也要发送昨日余量 (after1800_part_*) 给管理员看
+          if (hour < 12) {
+            await _sendFeishuSummaryFromFiles(u.email_account, yesterday, forceSendToUser, 'after1800_part_');
+          }
         }
       } catch (e) {
         console.error('[emails][summary_send] 用户失败:', u.email_account, e && e.message ? e.message : e);
