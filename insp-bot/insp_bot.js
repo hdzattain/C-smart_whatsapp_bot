@@ -3480,7 +3480,7 @@ function start(client) {
   cron.schedule('30 8 * * *', async () => {
     console.log('[定时任务] 开始执行 8:30 往日总结（香港时区）');
     for (const groupId of summaryGroups) {
-      await handlePastSummary(client, groupId);
+      await handleTodaySummary(client, groupId);
     }
   }, {
     timezone: 'Asia/Hong_Kong'
