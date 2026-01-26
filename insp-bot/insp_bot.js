@@ -934,97 +934,98 @@ async function uploadImageToFeishu(filepath) {
 
 // 使用飞书 node-sdk 上传文件
 async function uploadFileToFeishuWithSDK(filepath, options = {}) {
-  try {
-    // 获取文件信息
-    const stats = fs.statSync(filepath);
-    const fileSize = stats.size;
-    const fileName = options.fileName || path.basename(filepath);
+  const MAX_ATTEMPTS = 4; // 1次初始 + 3次重試
 
-    // 判断是否为多维表格上传场景
-    // 如果明确指定 isBitable 为 true，或者 parentType 包含 bitable，则认为是多维表格场景
-    const isBitable = options.isBitable === true || options.parentType?.includes('bitable');
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      // 获取文件信息
+      const stats = fs.statSync(filepath);
+      const fileSize = stats.size;
+      const fileName = options.fileName || path.basename(filepath);
 
-    // 确定 parent_type 和 parent_node
-    let parentType = options.parentType;
-    let parentNode = options.parentNode;
+      // 判断是否为多维表格上传场景
+      const isBitable = options.isBitable === true || options.parentType?.includes('bitable');
 
-    if (isBitable) {
-      // 多维表格场景：使用多维表格 token
-      const bitableToken = options.parentNode || options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN || process.env.LARK_PARENT_NODE;
-      if (!bitableToken) {
-        throw new Error('多维表格上传需要配置 LARK_DRIVE_ROUTE_TOKEN 环境变量，或通过 options.parentNode/options.driveRouteToken 提供');
+      // 确定 parent_type 和 parent_node
+      let parentType = options.parentType;
+      let parentNode = options.parentNode;
+
+      if (isBitable) {
+        const bitableToken = options.parentNode || options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN || process.env.LARK_PARENT_NODE;
+        if (!bitableToken) {
+          throw new Error('多维表格上传需要配置 LARK_DRIVE_ROUTE_TOKEN 环境变量');
+        }
+        parentType = parentType || 'bitable_image';
+        parentNode = bitableToken;
+      } else {
+        parentType = parentType || 'docx_image';
+        parentNode = parentNode || process.env.LARK_PARENT_NODE || '';
       }
-      parentType = parentType || 'bitable_image'; // 多维表格上传图片使用 bitable_image
-      parentNode = bitableToken; // 多维表格场景下，parent_node 就是多维表格的 token
-    } else {
-      // 其他场景
-      parentType = parentType || 'docx_image';
-      parentNode = parentNode || process.env.LARK_PARENT_NODE || '';
-    }
 
-    if (!parentNode) {
-      throw new Error('parent_node 参数必需，请通过 options.parentNode 或环境变量提供');
-    }
+      if (!parentNode) {
+        throw new Error('parent_node 参数必需');
+      }
 
-    // 构建 extra 参数（用于上传素材至云文档场景）
-    // extra 格式: {"drive_route_token":"素材所在云文档的 token"}
-    let extra = options.extra;
-    if (!extra) {
-      const driveRouteToken = options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN;
-      if (driveRouteToken) {
-        extra = JSON.stringify({ drive_route_token: driveRouteToken });
+      let extra = options.extra;
+      if (!extra) {
+        const driveRouteToken = options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN;
+        if (driveRouteToken) {
+          extra = JSON.stringify({ drive_route_token: driveRouteToken });
+        }
+      }
+
+      // 使用流
+      const fileStream = fs.createReadStream(filepath);
+
+      const requestData = {
+        file_name: fileName,
+        parent_type: parentType,
+        parent_node: parentNode,
+        size: fileSize,
+        file: fileStream,
+      };
+
+      if (extra) {
+        requestData.extra = extra;
+      }
+
+      console.log(`[LOG] 飞书 SDK 上传第 ${attempt} 次尝试...`);
+      const res = await larkClient.drive.v1.media.uploadAll({
+        data: requestData,
+      });
+
+      console.log(`[LOG] 飞书 SDK 上传响应: ${JSON.stringify(res)}`);
+
+      if (res.code !== undefined && res.code !== 0) {
+        throw new Error(`上传失败: code=${res.code}, msg=${res.msg || '未知错误'}`);
+      }
+
+      let fileToken = null;
+      if (res.data && res.data.file_token) {
+        fileToken = res.data.file_token;
+      } else if (res.file_token) {
+        fileToken = res.file_token;
+      }
+
+      if (fileToken) {
+        console.log(`[LOG] 成功获取 file_token: ${fileToken}`);
+        return fileToken;
+      } else {
+        throw new Error(`上传失败: 未找到 file_token`);
+      }
+    } catch (err) {
+      console.error(`[ERR] 飞书 SDK 上传失敗 (第 ${attempt} 次): ${err.message}`);
+
+      if (attempt < MAX_ATTEMPTS) {
+        // 漸進式延遲：5s, 10s, 20s
+        const nextDelay = 5000 * Math.pow(2, attempt - 1);
+        console.log(`[LOG] 等待 ${nextDelay / 1000} 秒後進行第 ${attempt + 1} 次嘗試...`);
+        await new Promise(resolve => setTimeout(resolve, nextDelay));
+      } else {
+        console.error(`[ERR] 达到最大重试次数，上传彻底失败`);
+        throw new Error(`飞书 SDK 上传彻底失败: ${err.message}`);
       }
     }
-
-    // 使用流而不是 Buffer
-    const fileStream = fs.createReadStream(filepath);
-
-    const requestData = {
-      file_name: fileName,
-      parent_type: parentType,
-      parent_node: parentNode,
-      size: fileSize,
-      file: fileStream,
-    };
-
-    // 如果提供了 extra 参数，添加到请求中
-    if (extra) {
-      requestData.extra = extra;
-    }
-
-    const res = await larkClient.drive.v1.media.uploadAll({
-      data: requestData,
-    });
-
-    console.log(`[LOG] 飞书 SDK 上传响应: ${JSON.stringify(res)}`);
-
-    // 根据飞书 SDK 返回的数据结构获取 file token
-    // 标准格式: {code: 0, msg: "success", data: {file_token: "..."}}
-    // 如果 code !== 0，表示上传失败
-    if (res.code !== undefined && res.code !== 0) {
-      throw new Error(`上传失败: code=${res.code}, msg=${res.msg || '未知错误'}, 返回数据: ${JSON.stringify(res)}`);
-    }
-
-    // 支持多种返回格式：
-    // 1. {code: 0, data: {file_token: "..."}} - 标准格式
-    // 2. {data: {file_token: "..."}} - 没有 code 字段
-    // 3. {file_token: "..."} - 直接返回（SDK 可能已解析）
-    let fileToken = null;
-    if (res.data && res.data.file_token) {
-      fileToken = res.data.file_token;
-    } else if (res.file_token) {
-      fileToken = res.file_token;
-    }
-
-    if (fileToken) {
-      console.log(`[LOG] 成功获取 file_token: ${fileToken}`);
-      return fileToken;
-    } else {
-      throw new Error(`上传失败: 未找到 file_token，返回数据: ${JSON.stringify(res)}`);
-    }
-  } catch (err) {
-    console.error(`[ERR] 飞书 SDK 上传失败: ${err.message}`, err);
-    throw new Error(`飞书 SDK 上传失败: ${err.message}`);
   }
 }
 
@@ -1939,9 +1940,23 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
       await fsPromises.mkdir(groupImgPath, { recursive: true });
 
       for (const mediaMsg of mediaMessages) {
-        const mediaData = await client.downloadMedia(mediaMsg);
+        // 如果是 album 容器消息本身，跳过下载（防止 "not contains media" 错误）
+        if (mediaMsg.type === 'album' && (!Array.isArray(mediaMsg.medias) || mediaMsg.medias.length === 0)) {
+          console.log('[LOG] 跳過空的 album 容器下載');
+          appendLog(groupId, '[LOG] 跳過空的 album 容器下載');
+          continue;
+        }
+
+        const mediaData = await client.downloadMedia(mediaMsg).catch(err => {
+          console.error(`[ERR] 下載媒體失敗 (${mediaMsg.type}):`, err.message);
+          appendLog(groupId, `[ERR] 下載媒體失敗 (${mediaMsg.type}): ${err.message}`);
+          return null;
+        });
+
         if (!mediaData) {
-          throw new Error(`无法下载媒体: ${mediaMsg.type}`);
+          console.warn(`[WARN] 無法獲取媒體數據: ${mediaMsg.type}`);
+          appendLog(groupId, `[WARN] 無法獲取媒體數據: ${mediaMsg.type}`);
+          continue;
         }
 
         let tempFilePath;
@@ -1958,13 +1973,16 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
 
         // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
         // 使用多维表格上传（自动从环境变量读取 LARK_DRIVE_ROUTE_TOKEN）
-        const image_token = await uploadFileToFeishuWithSDK(tempFilePath, { isBitable: true });
-        console.log(`[LOG] 媒体已上传到飞书，ID: ${image_token}`);
-        images.push(image_token);
-
-        // 将图片URL添加到query中
-        if (image_token) {
-          query += ` [图片ID: ${image_token}]`;
+        try {
+          const image_token = await uploadFileToFeishuWithSDK(tempFilePath, { isBitable: true });
+          if (image_token) {
+            console.log(`[LOG] 媒体已上传到飞书，ID: ${image_token}`);
+            images.push(image_token);
+            query += ` [图片ID: ${image_token}]`;
+          }
+        } catch (uploadErr) {
+          console.error(`[ERR] 媒体上传飞书失败，但继续尝试通过 FastGPT 处理: ${uploadErr.message}`);
+          appendLog(groupId, `[ERR] 媒体上传飞书失败，但继续尝试通过 FastGPT 处理: ${uploadErr.message}`);
         }
 
         // 清理临时文件
@@ -3220,7 +3238,7 @@ function start(client) {
 
       const chat = await client.getChatById(msg.from);
       const isGroup = chat.isGroup;
-      const groupName = isGroup ? chat.name : '非群組';
+      const groupName = isGroup ? (chat.name || chat.contact?.name || chat.groupMetadata?.subject || chat.formattedTitle || '未知群組') : '非群組';
       console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
       appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
 
@@ -3242,9 +3260,11 @@ function start(client) {
       if (msg.type === 'chat') {
         query = msg.body.trim();
         console.log('[LOG] 文本消息内容:', query);
-      } else if (msg.type === 'image') {
-        query = msg.caption || msg.body || '[图片]';
+        appendLog(user, `[LOG] 文本消息内容: ${query}`);
+      } else if (msg.type === 'image' || msg.type === 'album') {
+        query = msg.caption || '[图片]';
         console.log('[LOG] 图文消息内容:', query);
+        appendLog(user, `[LOG] 图文消息内容: ${query}`);
       } else if (['ptt', 'audio'].includes(msg.type)) {
         const mediaData = await client.downloadMedia(msg);
         if (mediaData) {
@@ -3254,14 +3274,19 @@ function start(client) {
           const base64Data = mediaData.replace(/^data:.*;base64,/, '');
           await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
           console.log(`[LOG] 语音已保存: ${filepath}`);
+          appendLog(user, `[LOG] 语音已保存: ${filepath}`);
           query = await audioToText(filepath, user);
           console.log(`[LOG] 语音转文字结果: ${query}`);
+          appendLog(user, `[LOG] 语音转文字结果: ${query}`);
           await fsPromises.unlink(filepath);
           console.log(`[LOG] 临时语音文件已删除: ${filepath}`);
+          appendLog(user, `[LOG] 临时语音文件已删除: ${filepath}`);
         }
       } else if (msg.type === 'document') {  // 新增：处理文档消息
         console.log('[LOG] 收到文档消息，MIME 类型:', msg.mimetype);
+        appendLog(user, `[LOG] 收到文档消息，MIME 类型: ${msg.mimetype}`);
         console.log('[LOG] 文档文件名:', msg.body || msg.filename || '[无文件名]');
+        appendLog(user, `[LOG] 文档文件名: ${msg.body || msg.filename || '[无文件名]'}`);
         const mediaData = await client.downloadMedia(msg);
         if (mediaData) {
           const ext = mime.extension(msg.mimetype) || 'bin';  // 根据 MIME 类型获取扩展名
@@ -3270,23 +3295,27 @@ function start(client) {
           // mediaData 为 Buffer 或 Blob，根据库返回类型处理（此处假设 Buffer）
           await fsPromises.writeFile(filepath, mediaData);
           console.log(`[LOG] 文档已保存: ${filepath}`);
+          appendLog(user, `[LOG] 文档已保存: ${filepath}`);
 
           // 可选：进一步处理文档内容（如提取 PDF 文本）
           // query = await extractDocumentText(filepath, user);  // 自定义函数示例
 
           query = `[文档: ${msg.body || filename}]`;  // 设置查询为文档描述
           console.log(`[LOG] 文档处理结果: ${query}`);
+          appendLog(user, `[LOG] 文档处理结果: ${query}`);
 
           // 可选：保留文件至 files 数组，或立即删除临时文件
           files.push(filepath);  // 若需后续使用
           // await fsPromises.unlink(filepath);  // 如仅日志则删除
         } else {
           console.log('[LOG] 文档下载失败');
+          appendLog(user, '[LOG] 文档下载失败');
           query = '[文档下载失败]';
         }
       } else {  // 原有不支持类型分支
         query = '[暂不支持的消息类型]';
         console.log('[LOG] 收到暂不支持的消息类型:', msg.type);
+        appendLog(user, `[LOG] 收到暂不支持的消息类型: ${msg.type}`);
       }
 
       if (LOG_WHATSAPP_MSGS) {
@@ -3497,7 +3526,6 @@ function start(client) {
   });
 
   // AdminGroups：每天 08:00、10:00 拉取当日最新群文件并下载到本地 tmp（香港时区）
-  // 先只做“拉取+下载+日志”，后续处理你说等下再碰
   const runAdminGroupsDownload = async (whenLabel) => {
     // whenLabel 只是“本次任务标签”（例如原计划 08:00/10:00），不代表当前触发时间
     if (!adminGroups.length) {
