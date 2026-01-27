@@ -2863,6 +2863,31 @@ def check_email_handled():
 # safetybot_table 表：CRUD 接口
 # ==========================
 
+def _parse_safety_date(raw_date):
+    """
+    統一日期解析邏輯：支持時間戳(秒/毫秒)、日期字串
+    返回 YYYY-MM-DD 格式
+    """
+    import pytz
+    hk_tz = pytz.timezone("Asia/Hong_Kong")
+    try:
+        if isinstance(raw_date, (int, float)):
+            # 判斷是秒還是毫秒 (10位數是秒，13位數是毫秒)
+            ts = raw_date / 1000.0 if raw_date > 1e11 else raw_date
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            return dt_obj.strftime("%Y-%m-%d")
+        elif isinstance(raw_date, str) and raw_date.isdigit():
+            raw_ts = float(raw_date)
+            ts = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            return dt_obj.strftime("%Y-%m-%d")
+        else:
+            # 嘗試解析字串
+            parsed_dt = date_parser.parse(str(raw_date))
+            return parsed_dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
 @app.route("/safety/records", methods=["GET"])
 def list_safety_records():
     """
@@ -2880,6 +2905,12 @@ def list_safety_records():
 
     for k, v in filters.items():
         if k in SAFETY_FIELDS:
+            if k == "date" and v:
+                parsed_v = _parse_safety_date(v)
+                if parsed_v:
+                    conditions.append(f"`{k}`=%s")
+                    params.append(parsed_v)
+                continue
             conditions.append(f"`{k}`=%s")
             params.append(v)
 
@@ -2917,25 +2948,9 @@ def _insert_one_safety_record(data: dict):
         return {"error": "缺少必填字段: group_id, date, item_type, zone, description"}
 
     # 2. 解析日期 (支持時間戳和字串)
-    try:
-        if isinstance(raw_date, (int, float)):
-            # 如果是時間戳
-            # 判斷是秒還是毫秒 (10位數是秒，13位數是毫秒)
-            ts = raw_date / 1000.0 if raw_date > 1e11 else raw_date
-            dt_obj = datetime.fromtimestamp(ts, hk_tz)
-            date_str = dt_obj.strftime("%Y-%m-%d")
-        elif isinstance(raw_date, str) and raw_date.isdigit():
-            # 數字字串也當時間戳處理
-            raw_ts = float(raw_date)
-            ts = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
-            dt_obj = datetime.fromtimestamp(ts, hk_tz)
-            date_str = dt_obj.strftime("%Y-%m-%d")
-        else:
-            # 嘗試作為標準字串解析
-            parsed_dt = date_parser.parse(str(raw_date))
-            date_str = parsed_dt.strftime("%Y-%m-%d")
-    except Exception as e:
-        return {"error": f"日期格式錯誤: {str(e)}"}
+    date_str = _parse_safety_date(raw_date)
+    if not date_str:
+        return {"error": "日期格式錯誤，請傳入正確的時間戳或日期字串"}
 
     # 3. 規範 item_type
     valid_types = ["緊急", "非緊急", "次緊急"]
@@ -3019,6 +3034,11 @@ def update_safety_record():
         if data.get(req) is None:
             return jsonify({"error": f"缺少字段: {req}"}), 400
     
+    # 統一解析日期 (支持時間戳)
+    date_str = _parse_safety_date(data['date'])
+    if not date_str:
+        return jsonify({"error": "日期格式錯誤"}), 400
+
     # 定位一條記錄並更新描述
     sql = f"""
         UPDATE `{SAFETY_TABLE}` SET `description` = %s 
@@ -3026,7 +3046,7 @@ def update_safety_record():
     """
     params = (
         data['description'], 
-        data['group_id'], data['date'], data['zone'], data['item_type'], data['id']
+        data['group_id'], date_str, data['zone'], data['item_type'], data['id']
     )
     
     try:
@@ -3039,10 +3059,12 @@ def update_safety_record():
 
 
 @app.route("/safety/records", methods=["DELETE"])
+@app.route("/safety/records/delete", methods=["POST"])
 def delete_safety_record():
     """
     刪除安全記錄
-    需要 body 提供: date, zone, item_type, id
+    支持 DELETE 方法或 POST 方法 (為了繞過某些 WAF 對 DELETE body 的限制)
+    需要 body 提供: group_id, date, zone, item_type, id
     """
     data = request.get_json(force=True)
     required = ["group_id", "date", "zone", "item_type", "id"]
@@ -3050,11 +3072,16 @@ def delete_safety_record():
         if data.get(req) is None:
             return jsonify({"error": f"缺少定位字段: {req}"}), 400
 
+    # 統一解析日期 (支持時間戳)
+    date_str = _parse_safety_date(data['date'])
+    if not date_str:
+        return jsonify({"error": "日期格式錯誤"}), 400
+
     sql = f"""
         DELETE FROM `{SAFETY_TABLE}` 
         WHERE `group_id` = %s AND `date` = %s AND `zone` = %s AND `item_type` = %s AND `id` = %s
     """
-    params = (data['group_id'], data['date'], data['zone'], data['item_type'], data['id'])
+    params = (data['group_id'], date_str, data['zone'], data['item_type'], data['id'])
     
     try:
         affected = execute_query(sql, params)
