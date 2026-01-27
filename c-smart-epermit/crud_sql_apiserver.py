@@ -117,6 +117,18 @@ GROUP_FILES_FIELDS = [
     "file_name",
 ]
 
+# --- safetybot_table 表配置 ---
+SAFETY_TABLE = "safetybot_table"
+SAFETY_FIELDS = [
+    "group_id",
+    "date",
+    "zone",
+    "item_type",
+    "id",
+    "description",
+    "created_at",
+]
+
 # --- 加密密钥配置 ---
 # 从 .env 文件读取 EMAIL_ENCRYPTION_KEY，必须设置
 ENCRYPTION_KEY_RAW = os.getenv("EMAIL_ENCRYPTION_KEY")
@@ -2847,11 +2859,210 @@ def check_email_handled():
     except Exception as e:
         return _json_error("查询失败", 500, code="check_failed", detail=str(e))
 
+# ==========================
+# safetybot_table 表：CRUD 接口
+# ==========================
+
+@app.route("/safety/records", methods=["GET"])
+def list_safety_records():
+    """
+    查询安全记录列表
+    - 支持按 date, zone, item_type 过滤
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+    conditions = []
+    params = []
+
+    for k, v in filters.items():
+        if k in SAFETY_FIELDS:
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{SAFETY_TABLE}` {where} ORDER BY `date` DESC, `zone`, `item_type`, `id` DESC"
+    
+    try:
+        rows = execute_query(sql, tuple(params), fetch=True)
+        # 轉換 date 為字串避免 JSON 序列化錯誤
+        for row in rows:
+            if isinstance(row.get('date'), (date, datetime)):
+                row['date'] = row['date'].strftime('%Y-%m-%d')
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": "查詢失敗", "detail": str(e)}), 500
+
+def _insert_one_safety_record(data: dict):
+    """
+    分組自增邏輯：
+    維度：date + zone + item_type
+    支持傳入日期字串 (YYYY-MM-DD) 或 Unix 時間戳 (秒/毫秒)
+    """
+    import pytz
+    hk_tz = pytz.timezone("Asia/Hong_Kong")
+
+    # 1. 基礎校驗
+    group_id = data.get("group_id")
+    raw_date = data.get("date")
+    item_type = data.get("item_type")
+    zone = data.get("zone")
+    description = data.get("description")
+    manual_id = data.get("id")  # 支持手動傳入 ID
+
+    if not all([group_id, raw_date, item_type, zone, description]):
+        return {"error": "缺少必填字段: group_id, date, item_type, zone, description"}
+
+    # 2. 解析日期 (支持時間戳和字串)
+    try:
+        if isinstance(raw_date, (int, float)):
+            # 如果是時間戳
+            # 判斷是秒還是毫秒 (10位數是秒，13位數是毫秒)
+            ts = raw_date / 1000.0 if raw_date > 1e11 else raw_date
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            date_str = dt_obj.strftime("%Y-%m-%d")
+        elif isinstance(raw_date, str) and raw_date.isdigit():
+            # 數字字串也當時間戳處理
+            raw_ts = float(raw_date)
+            ts = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            date_str = dt_obj.strftime("%Y-%m-%d")
+        else:
+            # 嘗試作為標準字串解析
+            parsed_dt = date_parser.parse(str(raw_date))
+            date_str = parsed_dt.strftime("%Y-%m-%d")
+    except Exception as e:
+        return {"error": f"日期格式錯誤: {str(e)}"}
+
+    # 3. 規範 item_type
+    valid_types = ["緊急", "非緊急", "次緊急"]
+    item_type = str(item_type).strip()
+    if item_type not in valid_types:
+        return {"error": f"無效的 item_type，必須是: {', '.join(valid_types)}"}
+
+    # 4. 數據操作
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # 獲取鎖，防止併發衝突
+            find_id_sql = f"""
+                SELECT COALESCE(MAX(`id`), 0) + 1 AS next_id 
+                FROM `{SAFETY_TABLE}` 
+                WHERE `group_id` = %s AND `date` = %s AND `item_type` = %s AND `zone` = %s 
+                FOR UPDATE
+            """
+            cur.execute(find_id_sql, (group_id, date_str, item_type, zone))
+            calc_id = cur.fetchone()['next_id']
+
+            # 如果手動傳入了 id，則使用手動的；否則使用計算出來的
+            final_id = int(manual_id) if manual_id is not None else calc_id
+
+            # 插入數據
+            insert_sql = f"""
+                INSERT INTO `{SAFETY_TABLE}` (`group_id`, `date`, `item_type`, `zone`, `id`, `description`)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            cur.execute(insert_sql, (
+                group_id, date_str, item_type, zone, 
+                final_id, description
+            ))
+            
+        conn.commit()
+        return {
+            "ok": True, 
+            "id": final_id, 
+            "group_id": group_id,
+            "item_type": item_type,
+            "zone": zone,
+            "date": date_str
+        }
+    except Exception as e:
+        if conn: conn.rollback()
+        return {"ok": False, "error": "數據插入失敗", "detail": str(e)}
+    finally:
+        if conn: conn.close()
+
+@app.route("/safety/records", methods=["POST"])
+def create_safety_record():
+    """
+    新增安全記錄
+    支持單條或批量
+    """
+    data = request.get_json(force=True)
+
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_safety_record(rec)
+            results.append(res)
+        has_error = any(isinstance(r, dict) and (not r.get("ok") or r.get("error")) for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    res = _insert_one_safety_record(data)
+    if isinstance(res, dict) and (not res.get("ok") or res.get("error")):
+        return jsonify(res), 400
+    return jsonify(res), 201
 
 
+@app.route("/safety/records", methods=["PUT"])
+def update_safety_record():
+    """
+    修改安全記錄描述
+    需要 body 提供: date, zone, item_type, id 以及新的 description
+    """
+    data = request.get_json(force=True)
+    required = ["group_id", "date", "zone", "item_type", "id", "description"]
+    for req in required:
+        if data.get(req) is None:
+            return jsonify({"error": f"缺少字段: {req}"}), 400
+    
+    # 定位一條記錄並更新描述
+    sql = f"""
+        UPDATE `{SAFETY_TABLE}` SET `description` = %s 
+        WHERE `group_id` = %s AND `date` = %s AND `zone` = %s AND `item_type` = %s AND `id` = %s
+    """
+    params = (
+        data['description'], 
+        data['group_id'], data['date'], data['zone'], data['item_type'], data['id']
+    )
+    
+    try:
+        affected = execute_query(sql, params)
+        if affected == 0:
+            return jsonify({"error": "未找到匹配的記錄"}), 404
+        return jsonify({"ok": True, "message": "修改成功"})
+    except Exception as e:
+        return jsonify({"error": "修改失敗", "detail": str(e)}), 500
 
 
+@app.route("/safety/records", methods=["DELETE"])
+def delete_safety_record():
+    """
+    刪除安全記錄
+    需要 body 提供: date, zone, item_type, id
+    """
+    data = request.get_json(force=True)
+    required = ["group_id", "date", "zone", "item_type", "id"]
+    for req in required:
+        if data.get(req) is None:
+            return jsonify({"error": f"缺少定位字段: {req}"}), 400
 
+    sql = f"""
+        DELETE FROM `{SAFETY_TABLE}` 
+        WHERE `group_id` = %s AND `date` = %s AND `zone` = %s AND `item_type` = %s AND `id` = %s
+    """
+    params = (data['group_id'], data['date'], data['zone'], data['item_type'], data['id'])
+    
+    try:
+        affected = execute_query(sql, params)
+        if affected == 0:
+            return jsonify({"error": "未找到匹配的記錄"}), 404
+        return jsonify({"ok": True, "message": "刪除成功"})
+    except Exception as e:
+        return jsonify({"error": "刪除失敗", "detail": str(e)}), 500
 
 
 if __name__ == "__main__":
