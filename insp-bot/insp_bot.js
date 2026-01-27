@@ -1164,7 +1164,7 @@ async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDi
   return { outPath, filename, contentType, bytes: Buffer.byteLength(res.data) };
 }
 
-async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
+async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '', shouldSendImage = false) {
   const dateISO = isoDateInTZ('Asia/Hong_Kong');
   appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
   const t0 = Date.now();
@@ -1216,27 +1216,29 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
   console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
   appendLog(adminGroupId, `[AdminGroupFiles] 下载成功: outPath=${dl.outPath} bytes=${dl.bytes} contentType=${dl.contentType}`);
 
-  // === 发送图片到指定 WhatsApp 群 ===
-  try {
-    const targetGroupId = '120363405248038757@g.us';
-    const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
+  // === 发送图片到指定 WhatsApp 群 (仅在 shouldSendImage 为 true 时) ===
+  if (shouldSendImage) {
+    try {
+      const targetGroupId = '120363405248038757@g.us';
+      const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
 
-    if (isImage) {
-      await client.sendImage(
-        targetGroupId,
-        dl.outPath,
-        dl.filename,
-        ''
-      );
-      console.log(`[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
-      appendLog(adminGroupId, `[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
-    } else {
-      console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
-      appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
+      if (isImage) {
+        await client.sendImage(
+          targetGroupId,
+          dl.outPath,
+          dl.filename,
+          ''
+        );
+        console.log(`[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+        appendLog(adminGroupId, `[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+      } else {
+        console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
+        appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
+      }
+    } catch (e) {
+      console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
+      appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
     }
-  } catch (e) {
-    console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
-    appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
   }
 
   console.log(`[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
@@ -2326,6 +2328,25 @@ async function handleProgressSummary(client, groupId) {
     await handlePlanBot(client, mockMsg, groupId, true);
     console.log(`[定时任务] 群组 ${groupId} AI 进度总结已发送`);
     appendLog(groupId, `[定时任务] AI 进度总结已发送`);
+
+    // === 发送图片到指定 WhatsApp 群 (仅限特定群组) ===
+    const targetGroupId = '120363405248038757@g.us';
+    if (groupId === targetGroupId) {
+      const adminGroups = process.env.AI_ANDACHEN_ADMIN_GROUPS
+        ? process.env.AI_ANDACHEN_ADMIN_GROUPS.split(',').map(g => g.trim())
+        : [];
+
+      console.log(`[handleProgressSummary] 触发特定群组 ${targetGroupId} 的图片发送任务...`);
+      for (const gid of adminGroups) {
+        if (!gid) continue;
+        try {
+          await handleAdminGroupDailyFileDownload(client, gid, 'ProgressSummary', true);
+        } catch (e) {
+          console.error(`[handleProgressSummary] 触发 adminGroup 下载失败: ${gid}`, e);
+          appendLog(groupId, `[handleProgressSummary] 触发 ${gid} 下载失败: ${e.message}`);
+        }
+      }
+    }
   } catch (err) {
     console.error(`[ERR] 群组 ${groupId} 发送 AI 进度总结失败:`, err);
     appendLog(groupId, `[ERR] 发送 AI 进度总结失败: ${err.message}`);
