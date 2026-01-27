@@ -48,10 +48,10 @@ const DRILL_FORMAT = {
   title: '------Core drill hole Summary------',
   guidelines: [
     '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
-    '-✅❎為中建有冇影安全相，⭕❌為分判有冇影安全相',
+    '✅❎為中建安全部，✔️✖️為中建施工部，⭕❌為分判影安全相',
     '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
   ],
-  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
+  showFields: ['location', 'subcontractor', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
   timeSegments: [
     { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
     { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
@@ -492,24 +492,45 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
 
 // 生成Summary详情方法（打窿群组）
 function generateDrillSummaryDetails(data, formatConfig, groupId) {
-  return data.map((rec, i) => {
-    const seq = i + 1;
-    const location = rec.location?.trim() || '';
-    const floor = rec.floor?.trim() || '';
-    const subcontractor = rec.subcontractor?.trim() || '';
-    const process = rec.process?.trim() || '';
+  const byBuilding = data.reduce((acc, rec) => {
+    const building = rec.building || '未知';
+    if (!acc[building]) acc[building] = [];
+    acc[building].push(rec);
+    return acc;
+  }, {});
 
-    // 安全相：复用公共函数
-    const updateHistory = parseUpdateHistory(rec.update_history);
-    const safetyStatus = generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true);
+  const details = Object.keys(byBuilding).sort().map(building => {
+    const records = byBuilding[building];
 
-    // 撤离状态：复用 xiabanText
-    const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
+    // 按ID排序
+    const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
 
-    return `${seq}. ${location}，${floor}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+    const buildingDetails = sortedRecords.map((rec, index) => {
+      const updateHistory = parseUpdateHistory(rec.update_history);
+      const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
+      const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
+
+      prefix = toEmojiId(rec.application_id || '??') + '-';
+
+      const fields = {
+        location: `${prefix}${rec.location || ''}`,
+        floor: rec.floor || '',
+        subcontractor: rec.subcontractor || '',
+        process: rec.process || '',
+        time_range: rec.time_range || '',
+        safetyStatus: generateRoleSafetyStatus(updateHistory, updateSafetyHistory, updateConstructHistory, formatConfig.timeSegments, groupId),
+        xiaban: xiabanText(rec.xiaban, 1, 1)
+      };
+
+      const recordLine = `${fields.location}，${fields.floor}，*${fields.subcontractor}*，工序:${fields.process}，時間:${fields.time_range}`;
+      const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
+      return `${recordLine}\n${safetyLine}`;
+    });
+    return `\n*${building}*\n\n${buildingDetails.join('\n')}`;
   });
-}
 
+  return details;
+}
 
 
 function ensureDir(dir) {
