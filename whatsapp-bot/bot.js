@@ -15,6 +15,7 @@ const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
 const { processScaffoldingQuery } = require('./group_process/scaffolding_process');
 const { processDrillingQuery } = require('./group_process/drill_hole_process');
+const { generateApplicationId: genHotworkId, getShortCode: getHotworkShortCode } = require('./heatwork_util');
 const {
   GROUP_ID,
   GROUP_ID_2,
@@ -28,7 +29,8 @@ const {
   DRILL_GROUPS,
   EXTERNAL_SCAFFOLDING_GROUPS,
   BLACKLIST_GROUPS,
-  ERROR_REPLY_GROUPS
+  ERROR_REPLY_GROUPS,
+  HEAT_WORK_GROUPS
 } = require('./group_constants');
 
 
@@ -120,6 +122,105 @@ const app = express();
 app.get('/health', (req, res) => res.json(state));
 app.listen(3060, () => {
   console.log('[健康检查] 服务器已启动在端口 3060');
+});
+
+// --- 火纸操作 Webhook (独立端口 3333) ---
+const webhookApp = express();
+webhookApp.use(express.json());
+
+webhookApp.post('/webhook/fire-paper', async (req, res) => {
+  console.log(`[Webhook] 收到火纸请求:`, JSON.stringify(req.body, null, 2));
+  const {
+    status,
+    hotwork_apply_id,
+    subcontractor,
+    location,
+    floor,
+    process,
+    date,
+    time_range,
+    apply_name,
+    number,
+    worker_name,
+    approver_name
+  } = req.body;
+
+  if (!client || state.status !== 'READY') {
+    return res.status(503).json({ error: 'WhatsApp 机器人未就绪' });
+  }
+
+  const STATUS_CONFIG = {
+    'submit': { title: '🔥 火紙已提交 (待批核)', icon: '📝' },
+    'approved': { title: '🔥 火紙已批核 (待簽收)', icon: '✅' },
+    'received_wait_cancel': { title: '🔥 火紙已簽收 (許可證生效)', icon: '🔓' },
+    'wait_cancel_confirm': { title: '🔥 火紙申請注銷 (待確認)', icon: '⏳' },
+    'cancel_success': { title: '🔥 火紙注銷完成', icon: '🔒' }
+  };
+
+  const config = STATUS_CONFIG[status] || { title: `🔥 火紙狀態更新: ${status}`, icon: '🔔' };
+
+  // 1. 以 GROUP_ID_6 作为唯一基准生成消息内容，确保所有群收到的编号一致
+  const refGid = GROUP_ID_6;
+  let message = '';
+
+  if (status === 'received_wait_cancel') {
+    const generatedId = genHotworkId(`位置：${location}`, refGid, hotwork_apply_id);
+    message = `Permit申請成功✅\n`;
+    message += `申請編號：${generatedId}\n`;
+    message += `日期：${date || 'N/A'}\n`;
+    message += `分判商：${subcontractor || 'N/A'}\n`;
+    message += `位置：${location || 'N/A'}\n`;
+    message += `樓層：${floor || 'N/A'}\n`;
+    message += `工序：${process || 'N/A'}\n`;
+    message += `時間：${time_range || 'N/A'}`;
+  } else if (status === 'cancel_success') {
+    const shortCode = getHotworkShortCode(hotwork_apply_id, refGid);
+    message = `Permit注銷成功✅\n`;
+    if (shortCode) {
+      message += `申請編號：${shortCode}\n`;
+    }
+    message += `日期：${date || 'N/A'}\n`;
+    message += `分判商：${subcontractor || 'N/A'}\n`;
+    message += `位置：${location || 'N/A'}\n`;
+    message += `樓層：${floor || 'N/A'}\n`;
+    message += `工序：${process || 'N/A'}\n`;
+    message += `時間：${time_range || 'N/A'}`;
+  } else {
+    message = `${config.icon} *${config.title}*\n\n`;
+    message += `🔹 *E-permit編號*: ${hotwork_apply_id || 'N/A'}\n`;
+    message += `🔹 *分判商*: ${subcontractor || 'N/A'}\n`;
+    message += `🔹 *施工位置*: ${location || 'N/A'} (${floor || 'N/A'})\n`;
+    message += `🔹 *工作類別*: ${process || 'N/A'}\n`;
+    message += `🔹 *日期時間*: ${date || 'N/A'} | ${time_range || 'N/A'}\n`;
+    message += `🔹 *申請人*: ${apply_name || 'N/A'} (${number || 'N/A'})\n`;
+    message += `🔹 *工人姓名*: ${worker_name || 'N/A'}\n`;
+
+    if (approver_name) {
+      message += `🔹 *批核人*: ${approver_name}\n`;
+    }
+    message += `\n⏰ *通知時間*: ${new Date().toLocaleString('zh-HK')}`;
+  }
+
+  // 2. 遍历群组进行“镜像”发送
+  for (const gid of HEAT_WORK_GROUPS) {
+    if (isBlacklistedGroup(gid)) {
+      console.log(`[Webhook] 跳过黑名单群组: ${gid}`);
+      continue;
+    }
+
+    try {
+      await client.sendText(gid, message);
+      console.log(`[Webhook] 火纸消息已镜像至群组: ${gid}`);
+    } catch (error) {
+      console.error(`[Webhook] 发送至群组 ${gid} 失败:`, error);
+    }
+  }
+
+  res.json({ success: true, message: 'Webhook 镜像处理完成' });
+});
+
+webhookApp.listen(3333, () => {
+  console.log('[Webhook] 火纸服务器启动在端口 3333');
 });
 
 const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
@@ -552,7 +653,7 @@ function appendLog(groupId, message) {
   const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  
+
   try {
     fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
   } catch (err) {
@@ -642,8 +743,8 @@ function shouldReply(msg, botName) {
   return true; // 私聊，默认都回复
 }
 
-function canBeIgnore(msgBody){
-    return msgBody === ''|| msgBody.includes('Permit') || msgBody.includes('提示') || msgBody.includes('留意');
+function canBeIgnore(msgBody) {
+  return msgBody === '' || msgBody.includes('Permit') || msgBody.includes('提示') || msgBody.includes('留意');
 }
 
 
@@ -688,7 +789,7 @@ async function handleMessage(msg) {
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
     const msgBody = msg.body || '';
-    if (!isGroup || canBeIgnore(msgBody)){
+    if (!isGroup || canBeIgnore(msgBody)) {
       console.log('不是群聊消息，或为可忽略的语句，不回复用户');
       appendLog(user, '不是群聊消息，或为可忽略的语句，不回复用户');
       return;
@@ -761,10 +862,10 @@ async function handleMessage(msg) {
           appendLog(groupId, `图片已保存: ${filepath}`);
         }
       }
-      
+
       // 支持图文混合：读取 caption 或 body
       const caption = msg.caption || msg.body || '';
-      if (canBeIgnore(caption)){
+      if (canBeIgnore(caption)) {
         console.log('消息为可忽略的语句');
         appendLog(user, '消息为可忽略的语句');
         return;
@@ -1181,12 +1282,12 @@ cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 10-19 * * *', async () => {
   try {
-      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
-      appendLog(GROUP_ID_4, '每小时总结推送成功');
+    await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
+    appendLog(GROUP_ID_4, '每小时总结推送成功');
   } catch (e) {
-      const errMsg = `每小时总结推送失败: ${e.message}`;
-      console.error(e);
-      appendLog(GROUP_ID_4, errMsg);
+    const errMsg = `每小时总结推送失败: ${e.message}`;
+    console.error(e);
+    appendLog(GROUP_ID_4, errMsg);
   }
 });
 cron.schedule('0 10-19 * * *', async () => {

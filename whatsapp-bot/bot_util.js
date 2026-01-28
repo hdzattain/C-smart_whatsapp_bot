@@ -61,7 +61,9 @@ function extractBuildingLetter(text = '') {
   const locationLine = String(text)
     .split(/\r?\n/)
     .find(line => line.includes('位置'));
-  
+
+  if (!locationLine) return 'Z';
+
   // 1. 去掉所有特殊字符（保留字母、数字、中文字符）
   const cleaned = locationLine.replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, '');
   
