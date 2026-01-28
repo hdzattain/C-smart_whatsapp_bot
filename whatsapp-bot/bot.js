@@ -305,6 +305,13 @@ function containsSummaryKeyword(text) {
   return keywords.some(k => text.includes(k));
 }
 
+function containsOTSummaryKeyword(text) {
+  const keywords = [
+    '未撤離分判', '未撤离分判'
+  ];
+  return keywords.some(k => text.includes(k));
+}
+
 // 检查群组是否在黑名单中（使用包含检查）
 function isBlacklistedGroup(msgFrom) {
   if (!msgFrom) return false;
@@ -664,17 +671,6 @@ function appendLog(groupId, message) {
 function formatOTSummary(data) {
   if (!Array.isArray(data) || data.length === 0) return "今日無工地記錄";
   const dateStr = parseDate(data[0].bstudio_create_time || '');
-  const contrs = [];
-  const seen = new Set();
-  for (const rec of data) {
-    const sub = rec.subcontrator || rec.subcontractor || '';
-    if (sub && !seen.has(sub)) {
-      contrs.push(sub);
-      seen.add(sub);
-    }
-  }
-  const mainContr = contrs.join('、');
-
   // 过滤满足条件的记录，并保持序号从1到n
   const details = data
     .filter(rec => parseInt(rec.xiaban) === 0 && parseInt(rec.part_leave_number || 0) < parseInt(rec.number || 0))
@@ -683,14 +679,22 @@ function formatOTSummary(data) {
       const sub = rec.subcontrator || rec.subcontractor || '';
       const num = rec.number || '';
       const floor = rec.floor || '';
-      return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}\n`;
+      const proc = rec.process || '';
+      const time = rec.time_range || '';
+
+      if (rec.application_id) {
+        const prefix = toEmojiId(rec.application_id) + '-';
+        return `${prefix}${loc}，${floor}，*${sub}*，${num}人，工序:${proc}，時間:${time}`;
+      } else {
+        return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}`;
+      }
     });
 
   if (details.length === 0) return "今日無未撤離分判記錄";
 
   return (
     `未撤離分判\n` +
-    `日期: ${dateStr}\n` +
+    `${dateStr}\n\n` +
     details.join('\n')
   );
 }
@@ -831,6 +835,30 @@ async function handleMessage(msg) {
           // 假定接口返回的是一个 JSON 数组
           const data = resp.data;
           const summary = formatSummary(data, groupId);
+          await client.reply(msg.from, summary, msg.id);
+        } catch (err) {
+          console.log(`调用 records/today 失败：${err.message}`);
+          appendLog(groupId, `调用 records/today 失败：${err.message}`);
+          await client.reply(msg.from, '获取今日记录失败，请稍后重试。', msg.id);
+        }
+        return;  // 拦截后不再往下走 FastGPT 流程
+      }
+      if (containsOTSummaryKeyword(query)) {
+        if (isBlacklistedGroup(groupId)) {
+          console.log(`群组 ${groupId} 在黑名单中，禁止使用总结功能`);
+          appendLog(groupId, `群组在黑名单中，禁止使用总结功能`);
+          return; // 直接返回，不执行总结功能
+        }
+
+        try {
+          const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
+            params: {
+              group_id: groupId // 替换为实际的群组ID
+            }
+          });
+          // 假定接口返回的是一个 JSON 数组
+          const data = resp.data;
+          const summary = formatOTSummary(data, groupId);
           await client.reply(msg.from, summary, msg.id);
         } catch (err) {
           console.log(`调用 records/today 失败：${err.message}`);
