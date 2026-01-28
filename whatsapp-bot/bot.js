@@ -15,6 +15,7 @@ const OpenCC = require('opencc-js');
 const converter = OpenCC.Converter({ from: 'cn', to: 'hk' });
 const { processScaffoldingQuery } = require('./group_process/scaffolding_process');
 const { processDrillingQuery } = require('./group_process/drill_hole_process');
+const { generateApplicationId: genHotworkId, getShortCode: getHotworkShortCode } = require('./heatwork_util');
 const {
   GROUP_ID,
   GROUP_ID_2,
@@ -28,7 +29,8 @@ const {
   DRILL_GROUPS,
   EXTERNAL_SCAFFOLDING_GROUPS,
   BLACKLIST_GROUPS,
-  ERROR_REPLY_GROUPS
+  ERROR_REPLY_GROUPS,
+  HEAT_WORK_GROUPS
 } = require('./group_constants');
 
 
@@ -48,10 +50,10 @@ const DRILL_FORMAT = {
   title: '------Core drill hole Summary------',
   guidelines: [
     '-開工前先到安環部交底，並說明詳細開工位置(E.G. 邊座幾樓邊個窿)',
-    '-✅❎為中建有冇影安全相，⭕❌為分判有冇影安全相',
+    '✅❎為中建安全部，✔️✖️為中建施工部，⭕❌為分判影安全相',
     '-收工影撤離及圍封相並發出此群組，才視為工人完全撤離'
   ],
-  showFields: ['location', 'subcontractor', 'number', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
+  showFields: ['location', 'subcontractor', 'floor', 'safetyStatus', 'xiaban', 'process', 'timeRange'],
   timeSegments: [
     { name: '上午', start: 300, end: 780, field: 'morning' }, // 06:00-13:00
     { name: '下午', start: 780, end: 1380, field: 'afternoon' } // 13:00-23:00
@@ -120,6 +122,105 @@ const app = express();
 app.get('/health', (req, res) => res.json(state));
 app.listen(3060, () => {
   console.log('[健康检查] 服务器已启动在端口 3060');
+});
+
+// --- 火纸操作 Webhook (独立端口 3333) ---
+const webhookApp = express();
+webhookApp.use(express.json());
+
+webhookApp.post('/webhook/fire-paper', async (req, res) => {
+  console.log(`[Webhook] 收到火纸请求:`, JSON.stringify(req.body, null, 2));
+  const {
+    status,
+    hotwork_apply_id,
+    subcontractor,
+    location,
+    floor,
+    process,
+    date,
+    time_range,
+    apply_name,
+    number,
+    worker_name,
+    approver_name
+  } = req.body;
+
+  if (!client || state.status !== 'READY') {
+    return res.status(503).json({ error: 'WhatsApp 机器人未就绪' });
+  }
+
+  const STATUS_CONFIG = {
+    'submit': { title: '🔥 火紙已提交 (待批核)', icon: '📝' },
+    'approved': { title: '🔥 火紙已批核 (待簽收)', icon: '✅' },
+    'received_wait_cancel': { title: '🔥 火紙已簽收 (許可證生效)', icon: '🔓' },
+    'wait_cancel_confirm': { title: '🔥 火紙申請注銷 (待確認)', icon: '⏳' },
+    'cancel_success': { title: '🔥 火紙注銷完成', icon: '🔒' }
+  };
+
+  const config = STATUS_CONFIG[status] || { title: `🔥 火紙狀態更新: ${status}`, icon: '🔔' };
+
+  // 1. 以 GROUP_ID_6 作为唯一基准生成消息内容，确保所有群收到的编号一致
+  const refGid = GROUP_ID_6;
+  let message = '';
+
+  if (status === 'received_wait_cancel') {
+    const generatedId = genHotworkId(`位置：${location}`, refGid, hotwork_apply_id);
+    message = `Permit申請成功✅\n`;
+    message += `申請編號：${generatedId}\n`;
+    message += `日期：${date || 'N/A'}\n`;
+    message += `分判商：${subcontractor || 'N/A'}\n`;
+    message += `位置：${location || 'N/A'}\n`;
+    message += `樓層：${floor || 'N/A'}\n`;
+    message += `工序：${process || 'N/A'}\n`;
+    message += `時間：${time_range || 'N/A'}`;
+  } else if (status === 'cancel_success') {
+    const shortCode = getHotworkShortCode(hotwork_apply_id, refGid);
+    message = `Permit注銷成功✅\n`;
+    if (shortCode) {
+      message += `申請編號：${shortCode}\n`;
+    }
+    message += `日期：${date || 'N/A'}\n`;
+    message += `分判商：${subcontractor || 'N/A'}\n`;
+    message += `位置：${location || 'N/A'}\n`;
+    message += `樓層：${floor || 'N/A'}\n`;
+    message += `工序：${process || 'N/A'}\n`;
+    message += `時間：${time_range || 'N/A'}`;
+  } else {
+    message = `${config.icon} *${config.title}*\n\n`;
+    message += `🔹 *E-permit編號*: ${hotwork_apply_id || 'N/A'}\n`;
+    message += `🔹 *分判商*: ${subcontractor || 'N/A'}\n`;
+    message += `🔹 *施工位置*: ${location || 'N/A'} (${floor || 'N/A'})\n`;
+    message += `🔹 *工作類別*: ${process || 'N/A'}\n`;
+    message += `🔹 *日期時間*: ${date || 'N/A'} | ${time_range || 'N/A'}\n`;
+    message += `🔹 *申請人*: ${apply_name || 'N/A'} (${number || 'N/A'})\n`;
+    message += `🔹 *工人姓名*: ${worker_name || 'N/A'}\n`;
+
+    if (approver_name) {
+      message += `🔹 *批核人*: ${approver_name}\n`;
+    }
+    message += `\n⏰ *通知時間*: ${new Date().toLocaleString('zh-HK')}`;
+  }
+
+  // 2. 遍历群组进行“镜像”发送
+  for (const gid of HEAT_WORK_GROUPS) {
+    if (isBlacklistedGroup(gid)) {
+      console.log(`[Webhook] 跳过黑名单群组: ${gid}`);
+      continue;
+    }
+
+    try {
+      await client.sendText(gid, message);
+      console.log(`[Webhook] 火纸消息已镜像至群组: ${gid}`);
+    } catch (error) {
+      console.error(`[Webhook] 发送至群组 ${gid} 失败:`, error);
+    }
+  }
+
+  res.json({ success: true, message: 'Webhook 镜像处理完成' });
+});
+
+webhookApp.listen(3333, () => {
+  console.log('[Webhook] 火纸服务器启动在端口 3333');
 });
 
 const LOG_WHATSAPP_MSGS = process.env.LOG_WHATSAPP_MSGS === 'true';
@@ -200,6 +301,13 @@ function containsSummaryKeyword(text) {
   const keywords = [
     '总结', '概括', '总结一下', '整理情况', '汇总', '回顾',
     '總結', '概括', '總結一下', '整理情況', '彙總', '回顧'
+  ];
+  return keywords.some(k => text.includes(k));
+}
+
+function containsOTSummaryKeyword(text) {
+  const keywords = [
+    '未撤離分判', '未撤离分判'
   ];
   return keywords.some(k => text.includes(k));
 }
@@ -492,24 +600,45 @@ function generateExternalSummaryDetails(data, formatConfig, groupId) {
 
 // 生成Summary详情方法（打窿群组）
 function generateDrillSummaryDetails(data, formatConfig, groupId) {
-  return data.map((rec, i) => {
-    const seq = i + 1;
-    const location = rec.location?.trim() || '';
-    const floor = rec.floor?.trim() || '';
-    const subcontractor = rec.subcontractor?.trim() || '';
-    const process = rec.process?.trim() || '';
+  const byBuilding = data.reduce((acc, rec) => {
+    const building = rec.building || '未知';
+    if (!acc[building]) acc[building] = [];
+    acc[building].push(rec);
+    return acc;
+  }, {});
 
-    // 安全相：复用公共函数
-    const updateHistory = parseUpdateHistory(rec.update_history);
-    const safetyStatus = generateSafetyStatus(updateHistory, formatConfig.timeSegments, groupId, true);
+  const details = Object.keys(byBuilding).sort().map(building => {
+    const records = byBuilding[building];
 
-    // 撤离状态：复用 xiabanText
-    const xiaban = xiabanText(rec.xiaban, rec.part_leave_number || 0, rec.number || 0);
+    // 按ID排序
+    const sortedRecords = records.sort((a, b) => (a.id || 0) - (b.id || 0));
 
-    return `${seq}. ${location}，${floor}，${subcontractor}，工序：${process}\n【安全相:${safetyStatus}】${xiaban}`;
+    const buildingDetails = sortedRecords.map((rec, index) => {
+      const updateHistory = parseUpdateHistory(rec.update_history);
+      const updateSafetyHistory = parseUpdateHistory(rec.update_safety_history);
+      const updateConstructHistory = parseUpdateHistory(rec.update_construct_history);
+
+      prefix = toEmojiId(rec.application_id || '??') + '-';
+
+      const fields = {
+        location: `${prefix}${rec.location || ''}`,
+        floor: rec.floor || '',
+        subcontractor: rec.subcontractor || '',
+        process: rec.process || '',
+        time_range: rec.time_range || '',
+        safetyStatus: generateRoleSafetyStatus(updateHistory, updateSafetyHistory, updateConstructHistory, formatConfig.timeSegments, groupId),
+        xiaban: xiabanText(rec.xiaban, 1, 1)
+      };
+
+      const recordLine = `${fields.location}，${fields.floor}，*${fields.subcontractor}*，工序:${fields.process}，時間:${fields.time_range}`;
+      const safetyLine = `【安全相：${fields.safetyStatus}】${fields.xiaban}`;
+      return `${recordLine}\n${safetyLine}`;
+    });
+    return `\n*${building}*\n\n${buildingDetails.join('\n')}`;
   });
-}
 
+  return details;
+}
 
 
 function ensureDir(dir) {
@@ -531,7 +660,7 @@ function appendLog(groupId, message) {
   const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  
+
   try {
     fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
   } catch (err) {
@@ -542,33 +671,35 @@ function appendLog(groupId, message) {
 function formatOTSummary(data) {
   if (!Array.isArray(data) || data.length === 0) return "今日無工地記錄";
   const dateStr = parseDate(data[0].bstudio_create_time || '');
-  const contrs = [];
-  const seen = new Set();
-  for (const rec of data) {
-    const sub = rec.subcontrator || rec.subcontractor || '';
-    if (sub && !seen.has(sub)) {
-      contrs.push(sub);
-      seen.add(sub);
-    }
-  }
-  const mainContr = contrs.join('、');
-
-  // 过滤满足条件的记录，并保持序号从1到n
+  // 过滤满足条件的记录，并按 application_id 排序 (A -> B -> C)
   const details = data
     .filter(rec => parseInt(rec.xiaban) === 0 && parseInt(rec.part_leave_number || 0) < parseInt(rec.number || 0))
+    .sort((a, b) => {
+      const idA = a.application_id || '';
+      const idB = b.application_id || '';
+      return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+    })
     .map((rec, i) => {
       const loc = rec.location || '';
       const sub = rec.subcontrator || rec.subcontractor || '';
       const num = rec.number || '';
       const floor = rec.floor || '';
-      return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}\n`;
+      const proc = rec.process || '';
+      const time = rec.time_range || '';
+
+      if (rec.application_id) {
+        const prefix = toEmojiId(rec.application_id) + '-';
+        return `${prefix}${loc}，${floor}，*${sub}*，${num}人，工序:${proc}，時間:${time}`;
+      } else {
+        return `${i + 1}. ${loc} ${sub} 共 ${num} 人 樓層 ${floor}`;
+      }
     });
 
   if (details.length === 0) return "今日無未撤離分判記錄";
 
   return (
     `未撤離分判\n` +
-    `日期: ${dateStr}\n` +
+    `${dateStr}\n\n` +
     details.join('\n')
   );
 }
@@ -621,6 +752,12 @@ function shouldReply(msg, botName) {
   return true; // 私聊，默认都回复
 }
 
+function canBeIgnore(msgBody) {
+  return msgBody === '' || msgBody.includes('Permit') || msgBody.includes('提示') || msgBody.includes('留意');
+}
+
+
+
 /**
  * 尝试从客户端获取发送者的电话号码
  */
@@ -660,9 +797,10 @@ async function handleMessage(msg) {
     const groupName = isGroup ? chat.name : '非群組';
     console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
     appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}, msg_id: ${msg.id}`);
-    if (!isGroup || msg.body.includes('Permit') || msg.body.includes('提示') || msg.body.includes('留意')) {
-      console.log('不是群聊消息，不回复用户');
-      appendLog(user, '不是群聊消息，属于用户自行总结，不回复用户');
+    const msgBody = msg.body || '';
+    if (!isGroup || canBeIgnore(msgBody)) {
+      console.log('不是群聊消息，或为可忽略的语句，不回复用户');
+      appendLog(user, '不是群聊消息，或为可忽略的语句，不回复用户');
       return;
     }
     // 在发送到API前，记录 group_id
@@ -710,6 +848,30 @@ async function handleMessage(msg) {
         }
         return;  // 拦截后不再往下走 FastGPT 流程
       }
+      if (containsOTSummaryKeyword(query)) {
+        if (isBlacklistedGroup(groupId)) {
+          console.log(`群组 ${groupId} 在黑名单中，禁止使用总结功能`);
+          appendLog(groupId, `群组在黑名单中，禁止使用总结功能`);
+          return; // 直接返回，不执行总结功能
+        }
+
+        try {
+          const resp = await axios.get('http://llm-ai.c-smart.hk/records/today', {
+            params: {
+              group_id: groupId // 替换为实际的群组ID
+            }
+          });
+          // 假定接口返回的是一个 JSON 数组
+          const data = resp.data;
+          const summary = formatOTSummary(data, groupId);
+          await client.reply(msg.from, summary, msg.id);
+        } catch (err) {
+          console.log(`调用 records/today 失败：${err.message}`);
+          appendLog(groupId, `调用 records/today 失败：${err.message}`);
+          await client.reply(msg.from, '获取今日记录失败，请稍后重试。', msg.id);
+        }
+        return;  // 拦截后不再往下走 FastGPT 流程
+      }
     } else if (msg.type === 'image' || msg.type === 'album') {
       // 图片或相册（可能带有文字 caption）
       // 支持相册场景：如果是 album，并且存在 medias 数组，则对每一张图片单独处理
@@ -734,15 +896,16 @@ async function handleMessage(msg) {
         }
       }
 
-      // 支持图文混合：读取 caption 或 body（album 的 caption 在原始 msg 上）
+      // 支持图文混合：读取 caption 或 body
       const caption = msg.caption || msg.body || '';
+      if (canBeIgnore(caption)) {
+        console.log('消息为可忽略的语句');
+        appendLog(user, '消息为可忽略的语句');
+        return;
+      }
       const imageCount = savedFiles.length;
       if (imageCount > 0) {
-        if (msg.type === 'album') {
-          query = caption ? `[相册 ${imageCount}张图片] ${caption}` : `[相册 ${imageCount}张图片]`;
-        } else {
-          query = caption ? `[图片] ${caption}` : '[图片]';
-        }
+        query = caption ? `[图片] ${caption}` : '[图片]';
         console.log(`图文消息内容: ${query}`);
         appendLog(groupId, `图文消息内容: ${query}`);
       }
@@ -1152,12 +1315,12 @@ cron.schedule('0 16 * * *', sendTodaySummary);  // 16:00
 cron.schedule('0 18 * * *', sendTodaySummary);  // 18:00
 cron.schedule('0 10-19 * * *', async () => {
   try {
-      await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
-      appendLog(GROUP_ID_4, '每小时总结推送成功');
+    await getSummary(GROUP_ID_4); // 仅针对 Site A 外墙
+    appendLog(GROUP_ID_4, '每小时总结推送成功');
   } catch (e) {
-      const errMsg = `每小时总结推送失败: ${e.message}`;
-      console.error(e);
-      appendLog(GROUP_ID_4, errMsg);
+    const errMsg = `每小时总结推送失败: ${e.message}`;
+    console.error(e);
+    appendLog(GROUP_ID_4, errMsg);
   }
 });
 cron.schedule('0 10-19 * * *', async () => {

@@ -21,6 +21,44 @@ class FastGPTClient {
     });
   }
 
+  /**
+   * 从 FastGPT 返回数据中提取“最终输出文本”。
+   * 兼容两类结构：
+   * - OpenAI 风格：{ choices: [{ message: { content: "..." } }] }
+   * - FastGPT workflow 风格：{ responseData: [{ pluginOutput: { output: "..." } }, ...] }
+   *   也可能在中间节点：{ extractResult: { output: "..." } }
+   */
+  _extractTextFromResponse(data) {
+    // 1) 标准 choices.content
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content === 'string' && content.trim()) return content;
+
+    // 2) workflow responseData（优先 pluginOutput.output；否则 extractResult.output）
+    const resp = data?.responseData;
+    if (Array.isArray(resp)) {
+      for (let i = resp.length - 1; i >= 0; i--) {
+        const item = resp[i];
+        const po = item?.pluginOutput?.output;
+        if (typeof po === 'string' && po.trim()) return po;
+      }
+      for (let i = resp.length - 1; i >= 0; i--) {
+        const item = resp[i];
+        const eo = item?.extractResult?.output;
+        if (typeof eo === 'string' && eo.trim()) return eo;
+      }
+    }
+
+    // 3) 少数情况下可能直接返回 { pluginOutput: { output } }
+    const directPo = data?.pluginOutput?.output;
+    if (typeof directPo === 'string' && directPo.trim()) return directPo;
+
+    // 4) 或直接返回 { output: "..." }
+    const out = data?.output;
+    if (typeof out === 'string' && out.trim()) return out;
+
+    return null;
+  }
+
   // ========== 公共 POST + 重试函数 ==========
   async _postToFastGPT(data, user) {
     let lastErr;
@@ -34,9 +72,9 @@ class FastGPTClient {
           timeout: 100000 // 100s 超时
         });
         console.log(`[LOG] FastGPT 返回数据: ${JSON.stringify(res.data)}`);
-        const content = res.data.choices[0]?.message?.content;
-        if (!content) throw new Error('FastGPT 返回数据中缺少 content 字段');
-        return content;
+        const text = this._extractTextFromResponse(res.data);
+        if (!text) throw new Error('FastGPT 返回数据中缺少可用输出字段（content/pluginOutput.output/extractResult.output）');
+        return text;
       } catch (err) {
         lastErr = err;
         const msg = (err.message || '') + (err.code ? ' ' + err.code : '');

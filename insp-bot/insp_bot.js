@@ -77,7 +77,7 @@ const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执�
 const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
 
 // 特定群组覆盖配置：这些群组将临时禁用 SafetyBot 标志（从环境变量读取，逗号分隔）
-const SAFETYBOT_OVERRIDE_GROUPS = process.env.SAFETYBOT_OVERRIDE_GROUPS 
+const SAFETYBOT_OVERRIDE_GROUPS = process.env.SAFETYBOT_OVERRIDE_GROUPS
   ? process.env.SAFETYBOT_OVERRIDE_GROUPS.split(',').map(g => g.trim())
   : []; // 从环境变量读取，未配置则为空数组
 
@@ -97,7 +97,7 @@ function getSafetyBotReactionOnly(groupId) {
 }
 // Lark 事件回调配置
 // const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
-const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
+const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS
   ? process.env.LARK_TARGET_GROUPS.split(',').map(g => g.trim())
   : []; // 从环境变量读取，未配置则为空数组
 
@@ -178,7 +178,7 @@ function appendLog(groupId, message) {
   const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  
+
   try {
     fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
   } catch (err) {
@@ -934,101 +934,101 @@ async function uploadImageToFeishu(filepath) {
 
 // 使用飞书 node-sdk 上传文件
 async function uploadFileToFeishuWithSDK(filepath, options = {}) {
-  try {
-    // 获取文件信息
-    const stats = fs.statSync(filepath);
-    const fileSize = stats.size;
-    const fileName = options.fileName || path.basename(filepath);
-    
-    // 判断是否为多维表格上传场景
-    // 如果明确指定 isBitable 为 true，或者 parentType 包含 bitable，则认为是多维表格场景
-    const isBitable = options.isBitable === true || options.parentType?.includes('bitable');
-    
-    // 确定 parent_type 和 parent_node
-    let parentType = options.parentType;
-    let parentNode = options.parentNode;
-    
-    if (isBitable) {
-      // 多维表格场景：使用多维表格 token
-      const bitableToken = options.parentNode || options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN || process.env.LARK_PARENT_NODE;
-      if (!bitableToken) {
-        throw new Error('多维表格上传需要配置 LARK_DRIVE_ROUTE_TOKEN 环境变量，或通过 options.parentNode/options.driveRouteToken 提供');
-      }
-      parentType = parentType || 'bitable_image'; // 多维表格上传图片使用 bitable_image
-      parentNode = bitableToken; // 多维表格场景下，parent_node 就是多维表格的 token
-    } else {
-      // 其他场景
-      parentType = parentType || 'docx_image';
-      parentNode = parentNode || process.env.LARK_PARENT_NODE || '';
-    }
-    
-    if (!parentNode) {
-      throw new Error('parent_node 参数必需，请通过 options.parentNode 或环境变量提供');
-    }
-    
-    // 构建 extra 参数（用于上传素材至云文档场景）
-    // extra 格式: {"drive_route_token":"素材所在云文档的 token"}
-    let extra = options.extra;
-    if (!extra) {
-      const driveRouteToken = options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN;
-      if (driveRouteToken) {
-        extra = JSON.stringify({ drive_route_token: driveRouteToken });
-      }
-    }
-    
-    // 使用流而不是 Buffer
-    const fileStream = fs.createReadStream(filepath);
-    
-    const requestData = {
-      file_name: fileName,
-      parent_type: parentType,
-      parent_node: parentNode,
-      size: fileSize,
-      file: fileStream,
-    };
-    
-    // 如果提供了 extra 参数，添加到请求中
-    if (extra) {
-      requestData.extra = extra;
-    }
-    
-    const res = await larkClient.drive.v1.media.uploadAll({
-      data: requestData,
-    });
+  const MAX_ATTEMPTS = 4; // 1次初始 + 3次重試
 
-    console.log(`[LOG] 飞书 SDK 上传响应: ${JSON.stringify(res)}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      // 获取文件信息
+      const stats = fs.statSync(filepath);
+      const fileSize = stats.size;
+      const fileName = options.fileName || path.basename(filepath);
 
-    // 根据飞书 SDK 返回的数据结构获取 file token
-    // 标准格式: {code: 0, msg: "success", data: {file_token: "..."}}
-    // 如果 code !== 0，表示上传失败
-    if (res.code !== undefined && res.code !== 0) {
-      throw new Error(`上传失败: code=${res.code}, msg=${res.msg || '未知错误'}, 返回数据: ${JSON.stringify(res)}`);
+      // 判断是否为多维表格上传场景
+      const isBitable = options.isBitable === true || options.parentType?.includes('bitable');
+
+      // 确定 parent_type 和 parent_node
+      let parentType = options.parentType;
+      let parentNode = options.parentNode;
+
+      if (isBitable) {
+        const bitableToken = options.parentNode || options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN || process.env.LARK_PARENT_NODE;
+        if (!bitableToken) {
+          throw new Error('多维表格上传需要配置 LARK_DRIVE_ROUTE_TOKEN 环境变量');
+        }
+        parentType = parentType || 'bitable_image';
+        parentNode = bitableToken;
+      } else {
+        parentType = parentType || 'docx_image';
+        parentNode = parentNode || process.env.LARK_PARENT_NODE || '';
+      }
+
+      if (!parentNode) {
+        throw new Error('parent_node 参数必需');
+      }
+
+      let extra = options.extra;
+      if (!extra) {
+        const driveRouteToken = options.driveRouteToken || process.env.LARK_DRIVE_ROUTE_TOKEN;
+        if (driveRouteToken) {
+          extra = JSON.stringify({ drive_route_token: driveRouteToken });
+        }
+      }
+
+      // 使用流
+      const fileStream = fs.createReadStream(filepath);
+
+      const requestData = {
+        file_name: fileName,
+        parent_type: parentType,
+        parent_node: parentNode,
+        size: fileSize,
+        file: fileStream,
+      };
+
+      if (extra) {
+        requestData.extra = extra;
+      }
+
+      console.log(`[LOG] 飞书 SDK 上传第 ${attempt} 次尝试...`);
+      const res = await larkClient.drive.v1.media.uploadAll({
+        data: requestData,
+      });
+
+      console.log(`[LOG] 飞书 SDK 上传响应: ${JSON.stringify(res)}`);
+
+      if (res.code !== undefined && res.code !== 0) {
+        throw new Error(`上传失败: code=${res.code}, msg=${res.msg || '未知错误'}`);
+      }
+
+      let fileToken = null;
+      if (res.data && res.data.file_token) {
+        fileToken = res.data.file_token;
+      } else if (res.file_token) {
+        fileToken = res.file_token;
+      }
+
+      if (fileToken) {
+        console.log(`[LOG] 成功获取 file_token: ${fileToken}`);
+        return fileToken;
+      } else {
+        throw new Error(`上传失败: 未找到 file_token`);
+      }
+    } catch (err) {
+      console.error(`[ERR] 飞书 SDK 上传失敗 (第 ${attempt} 次): ${err.message}`);
+
+      if (attempt < MAX_ATTEMPTS) {
+        // 漸進式延遲：5s, 10s, 20s
+        const nextDelay = 5000 * Math.pow(2, attempt - 1);
+        console.log(`[LOG] 等待 ${nextDelay / 1000} 秒後進行第 ${attempt + 1} 次嘗試...`);
+        await new Promise(resolve => setTimeout(resolve, nextDelay));
+      } else {
+        console.error(`[ERR] 达到最大重试次数，上传彻底失败`);
+        throw new Error(`飞书 SDK 上传彻底失败: ${err.message}`);
+      }
     }
-    
-    // 支持多种返回格式：
-    // 1. {code: 0, data: {file_token: "..."}} - 标准格式
-    // 2. {data: {file_token: "..."}} - 没有 code 字段
-    // 3. {file_token: "..."} - 直接返回（SDK 可能已解析）
-    let fileToken = null;
-    if (res.data && res.data.file_token) {
-      fileToken = res.data.file_token;
-    } else if (res.file_token) {
-      fileToken = res.file_token;
-    }
-    
-    if (fileToken) {
-      console.log(`[LOG] 成功获取 file_token: ${fileToken}`);
-      return fileToken;
-    } else {
-      throw new Error(`上传失败: 未找到 file_token，返回数据: ${JSON.stringify(res)}`);
-    }
-  } catch (err) {
-    console.error(`[ERR] 飞书 SDK 上传失败: ${err.message}`, err);
-    throw new Error(`飞书 SDK 上传失败: ${err.message}`);
   }
 }
 
- 
 // ========== AdminGroups: 拉群文件并下载为本地图片 ==========
 // tenant_access_token (internal) 缓存
 let _tenantTokenCache = { token: null, expireAt: 0 };
@@ -1164,7 +1164,7 @@ async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDi
   return { outPath, filename, contentType, bytes: Buffer.byteLength(res.data) };
 }
 
-async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
+async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '', shouldSendImage = false) {
   const dateISO = isoDateInTZ('Asia/Hong_Kong');
   appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
   const t0 = Date.now();
@@ -1215,20 +1215,14 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
   );
   console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
   appendLog(adminGroupId, `[AdminGroupFiles] 下载成功: outPath=${dl.outPath} bytes=${dl.bytes} contentType=${dl.contentType}`);
-  
-  // === 发送图片到指定 WhatsApp 群 ===
-  try {
-    const targetGroupIdsRaw =
-      process.env.AI_ANDACHEN_ADMIN_TEST_GROUPS ||
-      '';
-    const targetGroupIds = String(targetGroupIdsRaw)
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-    const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
-    
-    if (isImage) {
-      for (const targetGroupId of targetGroupIds) {
+
+  // === 发送图片到指定 WhatsApp 群 (仅在 shouldSendImage 为 true 时) ===
+  if (shouldSendImage) {
+    try {
+      const targetGroupId = '120363405248038757@g.us';
+      const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
+
+      if (isImage) {
         await client.sendImage(
           targetGroupId,
           dl.outPath,
@@ -1237,16 +1231,16 @@ async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel
         );
         console.log(`[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
         appendLog(adminGroupId, `[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+      } else {
+        console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
+        appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
       }
-    } else {
-      console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
-      appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
+    } catch (e) {
+      console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
+      appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
     }
-  } catch (e) {
-    console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
-    appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
   }
-  
+
   console.log(`[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
   appendLog(adminGroupId, `[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
   return { record: rec, download: dl };
@@ -1948,9 +1942,23 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
       await fsPromises.mkdir(groupImgPath, { recursive: true });
 
       for (const mediaMsg of mediaMessages) {
-        const mediaData = await client.downloadMedia(mediaMsg);
+        // 如果是 album 容器消息本身，跳过下载（防止 "not contains media" 错误）
+        if (mediaMsg.type === 'album' && (!Array.isArray(mediaMsg.medias) || mediaMsg.medias.length === 0)) {
+          console.log('[LOG] 跳過空的 album 容器下載');
+          appendLog(groupId, '[LOG] 跳過空的 album 容器下載');
+          continue;
+        }
+
+        const mediaData = await client.downloadMedia(mediaMsg).catch(err => {
+          console.error(`[ERR] 下載媒體失敗 (${mediaMsg.type}):`, err.message);
+          appendLog(groupId, `[ERR] 下載媒體失敗 (${mediaMsg.type}): ${err.message}`);
+          return null;
+        });
+
         if (!mediaData) {
-          throw new Error(`无法下载媒体: ${mediaMsg.type}`);
+          console.warn(`[WARN] 無法獲取媒體數據: ${mediaMsg.type}`);
+          appendLog(groupId, `[WARN] 無法獲取媒體數據: ${mediaMsg.type}`);
+          continue;
         }
 
         let tempFilePath;
@@ -1967,22 +1975,25 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
 
         // 上传逻辑（图像/文档通用；若文档需特殊处理，可扩展）
         // 使用多维表格上传（自动从环境变量读取 LARK_DRIVE_ROUTE_TOKEN）
-        const image_token = await uploadFileToFeishuWithSDK(tempFilePath, { isBitable: true });
-        console.log(`[LOG] 媒体已上传到飞书，ID: ${image_token}`);
-        images.push(image_token);
-
-        // 将图片URL添加到query中
-        if (image_token) {
-          query += ` [图片ID: ${image_token}]`;
+        try {
+          const image_token = await uploadFileToFeishuWithSDK(tempFilePath, { isBitable: true });
+          if (image_token) {
+            console.log(`[LOG] 媒体已上传到飞书，ID: ${image_token}`);
+            images.push(image_token);
+            query += ` [图片ID: ${image_token}]`;
+          }
+        } catch (uploadErr) {
+          console.error(`[ERR] 媒体上传飞书失败，但继续尝试通过 FastGPT 处理: ${uploadErr.message}`);
+          appendLog(groupId, `[ERR] 媒体上传飞书失败，但继续尝试通过 FastGPT 处理: ${uploadErr.message}`);
         }
 
         // 清理临时文件
-        await fsPromises.unlink(tempFilePath).catch(() => {}); // 忽略删除错误
+        await fsPromises.unlink(tempFilePath).catch(() => { }); // 忽略删除错误
       }
     }
 
     // 步骤8: 决定是否回复
-    const needReply = isGroup
+    const needReply = isGroup;
     console.log(`是否需要AI回复: ${needReply}`);
     appendLog(groupId, `是否需要AI回复: ${needReply}`);
 
@@ -2028,37 +2039,63 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
           return;
         }
 
+        // 1. 如果是闲聊消息，直接返回（优先级高）
+        if (replyStr && (replyStr.includes('闲聊消息') || replyStr.includes('閑聊消息') || replyStr.trim() === '闲聊消息' || replyStr.trim() === '閑聊消息')) {
+          console.log('[SafetyBot] 检测到闲聊消息，跳过回复/反应');
+          appendLog(groupId, `[SafetyBot] 检测到闲聊消息，跳过回复/反应: ${replyStr}`);
+          return;
+        }
+
+        // 2. 特殊消息处理：如果包含失败提示，则回复括号内的内容并发送 reaction
+        const failureMatch = replyStr && replyStr.match(/[失失][败敗]\s*[（(]([\s\S]+?)[）)]/u);
+        if (failureMatch && failureMatch[1]) {
+          const errorReply = failureMatch[1].trim();
+          if (errorReply) {
+            console.log(`[SafetyBot] 匹配到失败消息，回复: ${errorReply}`);
+            appendLog(groupId, `[SafetyBot] 匹配到失败消息，回复: ${errorReply}`);
+            if (!reactionOnly) {
+              await client.reply(msg.from, errorReply, msg.id);
+            }
+            await client.sendReactionToMessage(msg.id, '❌');
+            return;
+          }
+        } else if (replyStr && (replyStr.includes('失败') || replyStr.includes('失敗')) && (replyStr.includes('（') || replyStr.includes('('))) {
+          // 兜底逻辑：如果包含失败和括号，但正则没匹配上，记录一下原因
+          console.log(`[SafetyBot] 检测到可能的失败消息但正则匹配失败: "${replyStr}"`);
+          appendLog(groupId, `[SafetyBot] 检测到可能的失败消息但正则匹配失败: "${replyStr}"`);
+        }
+
         // 检查是否包含日期分段标记
-        const hasDateSegments = replyStr.includes('<<今日>>') || 
-                                replyStr.includes('<<昨日>>') || 
-                                replyStr.includes('<<前日>>');
-        
+        const hasDateSegments = replyStr.includes('<<今日>>') ||
+          replyStr.includes('<<昨日>>') ||
+          replyStr.includes('<<前日>>');
+
         if (hasDateSegments) {
           // 按照 <<今日>>、<<昨日>>、<<前日>> 的顺序分割并发送
           const segments = [];
           const markers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
-          
+
           for (let i = 0; i < markers.length; i++) {
             const marker = markers[i];
             if (replyStr.includes(marker)) {
               const startIndex = replyStr.indexOf(marker);
-              const endIndex = i < markers.length - 1 
+              const endIndex = i < markers.length - 1
                 ? replyStr.indexOf(markers[i + 1], startIndex + marker.length)
                 : replyStr.length;
-              
+
               let segment = '';
               if (endIndex === -1) {
                 segment = replyStr.substring(startIndex);
               } else {
                 segment = replyStr.substring(startIndex, endIndex);
               }
-              
+
               // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
               segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
               segments.push(segment);
             }
           }
-          
+
           // 如果设置了 REACTION_ONLY flag，不发送分段消息
           if (!reactionOnly) {
             // 按顺序发送每条消息
@@ -2078,10 +2115,10 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
         } else {
           // 原有的逻辑：检查 FastGPT 返回内容是否包含"成功"或"失败"
           let reactionEmoji = null;
-          const hasCreateSuccess = replyStr.includes('創建成功');
+          const hasCreateSuccess = replyStr.includes('創建成功') || replyStr.includes('创建成功');
           if (replyStr.includes('成功')) {
             reactionEmoji = '✅';
-          } else if (replyStr.includes('失败')) {
+          } else if (replyStr.includes('失败') || replyStr.includes('失敗')) {
             reactionEmoji = '❌';
           }
 
@@ -2092,7 +2129,7 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             await client.sendReactionToMessage(msg.id, reactionEmoji);
             console.log('已发送反应');
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
-            
+
             // 只有包含"創建成功"时才发送 reply（如果未设置 REACTION_ONLY）
             if (hasCreateSuccess && !reactionOnly) {
               console.log(`尝试回复用户: ${replyStr}`);
@@ -2105,25 +2142,13 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
               appendLog(groupId, '[REACTION_ONLY模式] 跳过发送文本回复');
             }
           } else if (reactionEmoji === '❌') {
-            // 包含"失败"：只发送 reaction，不发送 reply
+            // 包含"失败"：发送 reaction
             console.log(`尝试发送反应: ${reactionEmoji}`);
             appendLog(groupId, `尝试发送反应: ${reactionEmoji}`);
             await client.sendReactionToMessage(msg.id, reactionEmoji);
             console.log('已发送反应');
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
-            
-            // 如果包含「原始文本與引用文本不一致」，还要回复（如果未设置 REACTION_ONLY）
-            if (replyStr.includes('原始文本與引用文本不一致') && !reactionOnly) {
-              const errorReply = '當前項目與引用項目不一致，請保持引用項目和當前檢視或整改項目一致';
-              console.log(`尝试回复用户: ${errorReply}`);
-              appendLog(groupId, `尝试回复用户: ${errorReply}`);
-              await client.reply(msg.from, errorReply, msg.id);
-              console.log('已回复用户');
-              appendLog(groupId, '已回复用户');
-            } else if (replyStr.includes('原始文本與引用文本不一致') && reactionOnly) {
-              console.log('[REACTION_ONLY模式] 跳过发送错误提示文本');
-              appendLog(groupId, '[REACTION_ONLY模式] 跳过发送错误提示文本');
-            }
+            // 之前已在特殊消息处理中处理过不一致逻辑
           } else {
             // 其他情况使用 reply（如果未设置 REACTION_ONLY）
             if (!reactionOnly) {
@@ -2199,7 +2224,7 @@ async function handleWatchBot(client, msg, groupId, isGroup) {
     // —— 调用 FastGPT，拿到返回的 JSON 数据 ——
     let replyStr;
     try {
-      replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId});
+      replyStr = await sendToFastGPT({ query, user: msg.from, group_id: groupId });
       console.log(`FastGPT response content: ${replyStr}`);
       appendLog(groupId, `FastGPT 调用完成，content: ${replyStr}`);
     } catch (e) {
@@ -2303,6 +2328,25 @@ async function handleProgressSummary(client, groupId) {
     await handlePlanBot(client, mockMsg, groupId, true);
     console.log(`[定时任务] 群组 ${groupId} AI 进度总结已发送`);
     appendLog(groupId, `[定时任务] AI 进度总结已发送`);
+
+    // === 发送图片到指定 WhatsApp 群 (仅限特定群组) ===
+    const targetGroupId = '120363405248038757@g.us';
+    if (groupId === targetGroupId) {
+      const adminGroups = process.env.AI_ANDACHEN_ADMIN_GROUPS
+        ? process.env.AI_ANDACHEN_ADMIN_GROUPS.split(',').map(g => g.trim())
+        : [];
+
+      console.log(`[handleProgressSummary] 触发特定群组 ${targetGroupId} 的图片发送任务...`);
+      for (const gid of adminGroups) {
+        if (!gid) continue;
+        try {
+          await handleAdminGroupDailyFileDownload(client, gid, 'ProgressSummary', true);
+        } catch (e) {
+          console.error(`[handleProgressSummary] 触发 adminGroup 下载失败: ${gid}`, e);
+          appendLog(groupId, `[handleProgressSummary] 触发 ${gid} 下载失败: ${e.message}`);
+        }
+      }
+    }
   } catch (err) {
     console.error(`[ERR] 群组 ${groupId} 发送 AI 进度总结失败:`, err);
     appendLog(groupId, `[ERR] 发送 AI 进度总结失败: ${err.message}`);
@@ -2328,9 +2372,9 @@ async function handlePastSummary(client, groupId) {
     try {
       console.log(`[定时任务] 开始调用 FastGPT - 總結`);
       appendLog(groupId, `[定时任务] 开始调用 FastGPT - 總結`);
-      replyStr = await sendToFastGPT({ 
-        query: '總結', 
-        user: groupId, 
+      replyStr = await sendToFastGPT({
+        query: '總結',
+        user: groupId,
         group_id: groupId,
         variables: { group_id: groupId }
       });
@@ -2354,15 +2398,15 @@ async function handlePastSummary(client, groupId) {
         }
 
         // 检查是否包含日期分段标记
-        const hasDateSegments = replyStr.includes('<<今日>>') || 
-                                replyStr.includes('<<昨日>>') || 
-                                replyStr.includes('<<前日>>');
-        
+        const hasDateSegments = replyStr.includes('<<今日>>') ||
+          replyStr.includes('<<昨日>>') ||
+          replyStr.includes('<<前日>>');
+
         if (hasDateSegments) {
           // 提取 <<昨日>> 和 <<前日>> 的部分，跳过 <<今日>>
           const segments = [];
           const markers = ['<<昨日>>', '<<前日>>']; // 只处理昨日和前日
-          
+
           for (let i = 0; i < markers.length; i++) {
             const marker = markers[i];
             if (replyStr.includes(marker)) {
@@ -2370,25 +2414,25 @@ async function handlePastSummary(client, groupId) {
               // 查找下一个标记（可能是 <<今日>>、<<昨日>> 或 <<前日>>）
               const nextMarkers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
               let endIndex = replyStr.length;
-              
+
               for (const nextMarker of nextMarkers) {
                 const nextIndex = replyStr.indexOf(nextMarker, startIndex + marker.length);
                 if (nextIndex !== -1 && nextIndex < endIndex) {
                   endIndex = nextIndex;
                 }
               }
-              
+
               let segment = replyStr.substring(startIndex, endIndex);
-              
+
               // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
               segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
-              
+
               if (segment) {
                 segments.push(segment);
               }
             }
           }
-          
+
           // 按顺序发送每条消息（昨日在前，前日在后）
           for (const segment of segments) {
             console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
@@ -2438,9 +2482,9 @@ async function handleTodaySummary(client, groupId) {
     try {
       console.log(`[定时任务] 开始调用 FastGPT - 總結`);
       appendLog(groupId, `[定时任务] 开始调用 FastGPT - 總結`);
-      replyStr = await sendToFastGPT({ 
-        query: '總結', 
-        user: groupId, 
+      replyStr = await sendToFastGPT({
+        query: '總結',
+        user: groupId,
         group_id: groupId,
         variables: { group_id: groupId }
       });
@@ -2464,36 +2508,36 @@ async function handleTodaySummary(client, groupId) {
         }
 
         // 检查是否包含日期分段标记
-        const hasDateSegments = replyStr.includes('<<今日>>') || 
-                                replyStr.includes('<<昨日>>') || 
-                                replyStr.includes('<<前日>>');
-        
+        const hasDateSegments = replyStr.includes('<<今日>>') ||
+          replyStr.includes('<<昨日>>') ||
+          replyStr.includes('<<前日>>');
+
         if (hasDateSegments) {
           // 按照 <<今日>>、<<昨日>>、<<前日>> 的顺序分割并发送
           const segments = [];
           const markers = ['<<今日>>', '<<昨日>>', '<<前日>>'];
-          
+
           for (let i = 0; i < markers.length; i++) {
             const marker = markers[i];
             if (replyStr.includes(marker)) {
               const startIndex = replyStr.indexOf(marker);
-              const endIndex = i < markers.length - 1 
+              const endIndex = i < markers.length - 1
                 ? replyStr.indexOf(markers[i + 1], startIndex + marker.length)
                 : replyStr.length;
-              
+
               let segment = '';
               if (endIndex === -1) {
                 segment = replyStr.substring(startIndex);
               } else {
                 segment = replyStr.substring(startIndex, endIndex);
               }
-              
+
               // 去掉标记 <<今日>>、<<昨日>>、<<前日>>
               segment = segment.replace(/<<今日>>|<<昨日>>|<<前日>>/g, '').trim();
               segments.push(segment);
             }
           }
-          
+
           // 按顺序发送每条消息
           for (const segment of segments) {
             console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
@@ -2820,12 +2864,12 @@ function startHealthCheckServer() {
 // 监控状态变化并发送报警
 function checkStatusChange() {
   const current = state.status;
-  
+
   // 状态从 READY 切换到 QR_NEEDED 时报警
   if (current === 'QR_NEEDED' && lastHealthStatus !== 'QR_NEEDED') {
     sendFeishu("WPPConnect 检测到登录失效，请登录服务器扫码。命令: journalctl -u insp-bot -f");
   }
-  
+
   lastHealthStatus = current;
 }
 
@@ -2855,7 +2899,7 @@ function formatMergedLarkEventMessage(recordAddedActions) {
       translatedFields['填寫人']?.users?.[0]?.name ||
       translatedFields['填寫人']?.users?.[0]?.en_name ||
       '';
-    
+
     const key = `${分區}|${樓層}`;
     if (!grouped[key]) {
       grouped[key] = {
@@ -2865,7 +2909,7 @@ function formatMergedLarkEventMessage(recordAddedActions) {
         填寫人列表: new Set()
       };
     }
-    
+
     if (工序) {
       if (當日進度百分比) {
         grouped[key].工序列表.push(`${工序}：${當日進度百分比}`);
@@ -2881,19 +2925,19 @@ function formatMergedLarkEventMessage(recordAddedActions) {
 
   // 构建合并后的消息
   let message = '✅已收到進度填報\n';
-  
+
   const groups = Object.values(grouped);
   for (let i = 0; i < groups.length; i++) {
     const group = groups[i];
-    
+
     if (group.分區) {
       message += `分區：${group.分區}\n`;
     }
-    
+
     if (group.樓層) {
       message += `樓層：${group.樓層}\n`;
     }
-    
+
     if (group.工序列表.length > 0) {
       message += `工序：\n`;
       for (const 工序項 of group.工序列表) {
@@ -2905,13 +2949,13 @@ function formatMergedLarkEventMessage(recordAddedActions) {
     if (填寫人們.length > 0) {
       message += `填寫人：${填寫人們.join('、')}\n`;
     }
-    
+
     // 如果有多组，在组之间添加分隔（可选）
     if (i < groups.length - 1) {
       message += '\n';
     }
   }
-  
+
   return message.trim();
 }
 
@@ -2927,55 +2971,55 @@ async function handleLarkBitableEvent(eventData, isTranslated = false) {
         return;
       }
     }
-    
+
     // 提取事件ID用于去重
     const eventId = eventData?.header?.event_id || eventData?.event_id || null;
-    
+
     if (eventId) {
       // 检查是否已处理过
       if (processedEventIds.has(eventId)) {
         console.log(`[Lark] 事件已处理过，跳过: ${eventId}`);
         return;
       }
-      
+
       // 标记为已处理
       processedEventIds.add(eventId);
-      
+
       // 限制去重集合大小，避免内存无限增长（保留最近1000个）
       if (processedEventIds.size > 1000) {
         const firstId = processedEventIds.values().next().value;
         processedEventIds.delete(firstId);
       }
     }
-    
+
     // 记录接收到的数据
     const dataStr = JSON.stringify(eventData, null, 2);
     console.log(`[Lark] 收到新事件${eventId ? ` (ID: ${eventId})` : ''}${isTranslated ? ' (翻译版)' : ''}`);
     appendLog('lark-events', `收到数据${isTranslated ? ' (翻译版)' : ''}: ${dataStr}`);
-    
+
     // 如果是翻译版数据，处理并发送消息
     if (isTranslated && eventData?.event?.action_list) {
       const actionList = eventData.event.action_list;
       const recordAddedActions = actionList.filter(item => item.action === 'record_added' && item.translated_fields);
-      
+
       console.log(`[Lark] 找到 ${recordAddedActions.length} 个 record_added 记录（共 ${actionList.length} 个 action）`);
       appendLog('lark-events', `找到 ${recordAddedActions.length} 个 record_added 记录`);
-      
+
       if (recordAddedActions.length === 0) {
         return;
       }
-      
+
       // 合并所有记录生成一条消息
       const mergedMessage = formatMergedLarkEventMessage(recordAddedActions);
-      
+
       if (!mergedMessage) {
         console.log('[Lark] 合并后的消息为空，跳过发送');
         return;
       }
-      
+
       console.log(`[Lark] 生成合并后的格式化消息（包含 ${recordAddedActions.length} 个记录）:\n${mergedMessage}`);
       appendLog('lark-events', `生成合并后的格式化消息（包含 ${recordAddedActions.length} 个记录）:\n${mergedMessage}`);
-      
+
       // 发送合并后的消息到配置的目标群组
       if (whatsappClient && LARK_TARGET_GROUPS.length > 0) {
         for (const groupId of LARK_TARGET_GROUPS) {
@@ -2996,7 +3040,7 @@ async function handleLarkBitableEvent(eventData, isTranslated = false) {
           console.log('[Lark] 未配置目标群组，仅记录日志');
         }
       }
-      
+
       console.log(`[Lark] 完成处理，已发送 1 条合并消息（包含 ${recordAddedActions.length} 个记录）`);
       appendLog('lark-events', `完成处理，已发送 1 条合并消息（包含 ${recordAddedActions.length} 个记录）`);
     }
@@ -3012,13 +3056,13 @@ function extractJsonFromContent(content, startIndex) {
     // 优先查找翻译版数据 "[翻译版] 事件数据:"
     let dataStart = content.indexOf('[翻译版] 事件数据:', startIndex);
     let isTranslated = true;
-    
+
     // 如果没找到翻译版，查找原始数据 "事件数据:"
     if (dataStart === -1) {
       dataStart = content.indexOf('事件数据:', startIndex);
       isTranslated = false;
     }
-    
+
     if (dataStart === -1) {
       return { json: null, endIndex: startIndex, isTranslated: false };
     }
@@ -3037,7 +3081,7 @@ function extractJsonFromContent(content, startIndex) {
 
     for (let i = jsonStart; i < content.length; i++) {
       const char = content[i];
-      
+
       if (escapeNext) {
         escapeNext = false;
         continue;
@@ -3074,7 +3118,7 @@ function extractJsonFromContent(content, startIndex) {
     // 提取 JSON 字符串
     const jsonStr = content.substring(jsonStart, jsonEnd);
     const jsonData = JSON.parse(jsonStr);
-    
+
     return { json: jsonData, endIndex: jsonEnd, isTranslated };
   } catch (err) {
     console.error('[Lark] 解析 JSON 失败:', err.message);
@@ -3121,7 +3165,7 @@ async function readNewLogContent(logFilePath) {
 
     while (true) {
       const result = extractJsonFromContent(newContent, searchIndex);
-      
+
       if (result.json) {
         eventCount++;
         console.log(`[Lark] 成功解析事件数据 #${eventCount}${result.isTranslated ? ' (翻译版)' : ''}`);
@@ -3155,22 +3199,22 @@ function startLarkLogWatcher() {
   console.log(`[Lark] 服务启动时间: ${new Date(SERVICE_START_TIME).toISOString()} (${SERVICE_START_TIME})`);
   console.log(`[Lark] 只处理启动时间之后的新事件`);
   appendLog('lark-events', `服务启动时间: ${new Date(SERVICE_START_TIME).toISOString()} (${SERVICE_START_TIME})`);
-  
+
   // 检查目录是否存在
   if (!fs.existsSync(LARK_LOG_DIR)) {
     console.error(`[Lark] 错误: 日志目录不存在: ${LARK_LOG_DIR}`);
     appendLog('lark-events', `错误: 日志目录不存在: ${LARK_LOG_DIR}`);
     return;
   }
-  
+
   console.log(`[Lark] 日志目录存在，开始监听`);
-  
+
   // 每秒检查一次日志文件
   setInterval(() => {
     try {
       const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
       const logFilePath = path.join(LARK_LOG_DIR, `${today}.log`);
-      
+
       readNewLogContent(logFilePath).catch(err => {
         console.error('[Lark] 检查日志文件失败:', err.message);
         console.error('[Lark] 错误堆栈:', err.stack);
@@ -3182,7 +3226,7 @@ function startLarkLogWatcher() {
   }, 1000); // 每秒检查一次
 
   console.log('[Lark] 日志文件监听已启动，每秒检查一次');
-  
+
   // 立即检查一次
   const today = new Date().toISOString().slice(0, 10);
   const logFilePath = path.join(LARK_LOG_DIR, `${today}.log`);
@@ -3199,11 +3243,11 @@ function start(client) {
 
   // 保存客户端引用供 Lark 事件处理使用
   whatsappClient = client;
-  
+
   // 更新状态为 READY
   state.status = 'READY';
   checkStatusChange();
-  
+
   // 启动 Lark 日志文件监听
   startLarkLogWatcher();
 
@@ -3215,14 +3259,14 @@ function start(client) {
 
       const chat = await client.getChatById(msg.from);
       const isGroup = chat.isGroup;
-      const groupName = isGroup ? chat.name : '非群組';
+      const groupName = isGroup ? (chat.name || chat.contact?.name || chat.groupMetadata?.subject || chat.formattedTitle || '未知群組') : '非群組';
       console.log(`收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
       appendLog(user, `收到消息，from: ${msg.from}, type: ${msg.type}, isGroup: ${isGroup}, groupName: ${groupName}`);
 
       const SenderContact = await client.getContact(msg.author || msg.from);
       let contactPhone = await getSenderPhoneNumber(client, msg.author || msg.from);
-      console.log('[DEBUG 发送人的number, name, pushname分别是]',contactPhone, SenderContact.name, SenderContact.pushname);
-      appendLog(user, '[DEBUG 发送人的number, name, pushname分别是]',contactPhone, SenderContact.name, SenderContact.pushname);
+      console.log('[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
+      appendLog(user, '[DEBUG 发送人的number, name, pushname分别是]', contactPhone, SenderContact.name, SenderContact.pushname);
 
       if (!isGroup) {
         console.log('[LOG] 不是群聊消息，不回复用户');
@@ -3237,9 +3281,11 @@ function start(client) {
       if (msg.type === 'chat') {
         query = msg.body.trim();
         console.log('[LOG] 文本消息内容:', query);
-      } else if (msg.type === 'image') {
-        query = msg.caption || msg.body || '[图片]';
+        appendLog(user, `[LOG] 文本消息内容: ${query}`);
+      } else if (msg.type === 'image' || msg.type === 'album') {
+        query = msg.caption || '[图片]';
         console.log('[LOG] 图文消息内容:', query);
+        appendLog(user, `[LOG] 图文消息内容: ${query}`);
       } else if (['ptt', 'audio'].includes(msg.type)) {
         const mediaData = await client.downloadMedia(msg);
         if (mediaData) {
@@ -3249,14 +3295,19 @@ function start(client) {
           const base64Data = mediaData.replace(/^data:.*;base64,/, '');
           await fsPromises.writeFile(filepath, Buffer.from(base64Data, 'base64'));
           console.log(`[LOG] 语音已保存: ${filepath}`);
+          appendLog(user, `[LOG] 语音已保存: ${filepath}`);
           query = await audioToText(filepath, user);
           console.log(`[LOG] 语音转文字结果: ${query}`);
+          appendLog(user, `[LOG] 语音转文字结果: ${query}`);
           await fsPromises.unlink(filepath);
           console.log(`[LOG] 临时语音文件已删除: ${filepath}`);
+          appendLog(user, `[LOG] 临时语音文件已删除: ${filepath}`);
         }
       } else if (msg.type === 'document') {  // 新增：处理文档消息
         console.log('[LOG] 收到文档消息，MIME 类型:', msg.mimetype);
+        appendLog(user, `[LOG] 收到文档消息，MIME 类型: ${msg.mimetype}`);
         console.log('[LOG] 文档文件名:', msg.body || msg.filename || '[无文件名]');
+        appendLog(user, `[LOG] 文档文件名: ${msg.body || msg.filename || '[无文件名]'}`);
         const mediaData = await client.downloadMedia(msg);
         if (mediaData) {
           const ext = mime.extension(msg.mimetype) || 'bin';  // 根据 MIME 类型获取扩展名
@@ -3265,23 +3316,27 @@ function start(client) {
           // mediaData 为 Buffer 或 Blob，根据库返回类型处理（此处假设 Buffer）
           await fsPromises.writeFile(filepath, mediaData);
           console.log(`[LOG] 文档已保存: ${filepath}`);
+          appendLog(user, `[LOG] 文档已保存: ${filepath}`);
 
           // 可选：进一步处理文档内容（如提取 PDF 文本）
           // query = await extractDocumentText(filepath, user);  // 自定义函数示例
 
           query = `[文档: ${msg.body || filename}]`;  // 设置查询为文档描述
           console.log(`[LOG] 文档处理结果: ${query}`);
+          appendLog(user, `[LOG] 文档处理结果: ${query}`);
 
           // 可选：保留文件至 files 数组，或立即删除临时文件
           files.push(filepath);  // 若需后续使用
           // await fsPromises.unlink(filepath);  // 如仅日志则删除
         } else {
           console.log('[LOG] 文档下载失败');
+          appendLog(user, '[LOG] 文档下载失败');
           query = '[文档下载失败]';
         }
       } else {  // 原有不支持类型分支
         query = '[暂不支持的消息类型]';
         console.log('[LOG] 收到暂不支持的消息类型:', msg.type);
+        appendLog(user, `[LOG] 收到暂不支持的消息类型: ${msg.type}`);
       }
 
       if (LOG_WHATSAPP_MSGS) {
@@ -3470,12 +3525,12 @@ function start(client) {
   const summaryGroups = process.env.SAFETYBOT_GROUPS
     ? process.env.SAFETYBOT_GROUPS.split(',').map(g => g.trim())
     : [];
-  
+
   // 往日总结：每天早上8:30（香港时区）
   cron.schedule('30 8 * * *', async () => {
     console.log('[定时任务] 开始执行 8:30 往日总结（香港时区）');
     for (const groupId of summaryGroups) {
-      await handlePastSummary(client, groupId);
+      await handleTodaySummary(client, groupId);
     }
   }, {
     timezone: 'Asia/Hong_Kong'
@@ -3492,7 +3547,6 @@ function start(client) {
   });
 
   // AdminGroups：每天 08:00、10:00 拉取当日最新群文件并下载到本地 tmp（香港时区）
-  // 先只做“拉取+下载+日志”，后续处理你说等下再碰
   const runAdminGroupsDownload = async (whenLabel) => {
     // whenLabel 只是“本次任务标签”（例如原计划 08:00/10:00），不代表当前触发时间
     if (!adminGroups.length) {

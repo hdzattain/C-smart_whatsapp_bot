@@ -33,13 +33,16 @@ app = Flask(__name__)
 EXTERNAL_SCAFFOLDING_GROUPS = [
     '120363400601106571@g.us',
     '120363372181860061@g.us',
-    '120363420660094468@g.us'
+    '120363420660094468@g.us',
+    '120363423214854498@g.us', # 打窿
+    '120363401312839305@g.us', # 打窿
 ]
 
 # --- 打窿群组定义 ---
 DRILLING_GROUPS = [
-    '120363423214854498@g.us',
-    '120363401312839305@g.us'
+    # '120363423214854498@g.us',
+    # '120363401312839305@g.us'
+    
 ]
 
 
@@ -101,6 +104,28 @@ EMAIL_EVERYDAY_FIELDS = [
     "email_account",
     "email_id",
     "received_time",
+    "created_at",
+]
+
+# --- 群组文件表配置 ---
+GROUP_FILES_TABLE = "CEQManagement"
+GROUP_FILES_FIELDS = [
+    "id",
+    "group_id",
+    "bstudio_create_time",
+    "file_url",
+    "file_name",
+]
+
+# --- safetybot_table 表配置 ---
+SAFETY_TABLE = "safetybot_table"
+SAFETY_FIELDS = [
+    "group_id",
+    "date",
+    "zone",
+    "item_type",
+    "id",
+    "description",
     "created_at",
 ]
 
@@ -594,6 +619,34 @@ def send_email_smtp(
         return {"ok": True}
     except Exception as e:
         raise RuntimeError(f"SMTP 发送失败: {str(e)}") from e
+
+
+def test_email_login(email_account, email_password, imap_server=None, imap_port=None):
+    """
+    测试邮箱账号和密码是否能成功登录 IMAP 服务器
+    - 返回: (success: bool, error_message: str)
+    """
+    mail = None
+    try:
+        imap_server = imap_server or DEFAULT_IMAP_SERVER
+        imap_port = imap_port or DEFAULT_IMAP_PORT
+        
+        if not imap_server:
+            return False, "缺少 IMAP 服务器配置"
+        
+        mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=10)
+        mail.login(email_account, email_password)
+        return True, ""
+    except imaplib.IMAP4.error as e:
+        return False, f"IMAP 登录失败: {str(e)}"
+    except Exception as e:
+        return False, f"登录测试失败: {str(e)}"
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
 
 def mark_emails_unread_imap(
@@ -2102,6 +2155,176 @@ def update_jiaodika(record_id):
 
 
 # ==========================
+# group_files 表：查询 & 更新
+# ==========================
+
+
+@app.route("/group_files", methods=["GET"])
+def list_group_files():
+    """
+    查询 group_files 表
+    - 支持 URL query 参数和 GET JSON body 作为过滤条件
+    - 仅支持已知字段过滤（GROUP_FILES_FIELDS）
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in GROUP_FILES_FIELDS:
+            if k == "bstudio_create_time" and v:
+                # 支持传 YYYY-MM-DD，按一天范围查
+                try:
+                    dt = datetime.strptime(v[:10], "%Y-%m-%d")
+                    start = dt.strftime("%Y-%m-%d 00:00:00")
+                    end = dt.strftime("%Y-%m-%d 23:59:59")
+                    conditions.append("`bstudio_create_time` BETWEEN %s AND %s")
+                    params.extend([start, end])
+                    continue
+                except Exception:
+                    # 解析失败则按等值匹配
+                    pass
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{GROUP_FILES_TABLE}` {where} ORDER BY `id` DESC"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
+
+def _insert_one_group_file(data: dict):
+    """
+    插入一条 group_files 记录
+    - 允许部分字段缺省，只插入提供的字段
+    - 自动填充 bstudio_create_time（如未提供）
+    - group_id, file_url, file_name 为必填字段
+    """
+    if not isinstance(data, dict):
+        return {"error": "每条记录必须是 JSON 对象"}
+
+    # 校验必填字段
+    if not data.get("group_id"):
+        return {"error": "缺少必填字段: group_id"}
+    if not data.get("file_url"):
+        return {"error": "缺少必填字段: file_url"}
+    if not data.get("file_name"):
+        return {"error": "缺少必填字段: file_name"}
+
+    # 自动时间
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    record = {}
+    for k in GROUP_FILES_FIELDS:
+        if k == "id":
+            # 一般由数据库自增，如需手动传入也允许
+            if "id" in data:
+                record["id"] = data.get("id")
+            continue
+        if k == "bstudio_create_time":
+            record[k] = data.get(k) or now_str
+            continue
+        if k in data:
+            record[k] = data.get(k)
+
+    # 只插入有值的字段
+    cols = []
+    vals = []
+    for k, v in record.items():
+        if v is not None:
+            cols.append(f"`{k}`")
+            vals.append(v)
+
+    if not cols:
+        return {"error": "没有可插入字段"}
+
+    placeholders = ", ".join(["%s"] * len(cols))
+    cols_sql = ", ".join(cols)
+    sql = f"INSERT INTO `{GROUP_FILES_TABLE}` ({cols_sql}) VALUES ({placeholders})"
+
+    try:
+        inserted_id = execute_query(sql, tuple(vals), return_lastrowid=True)
+        return {"status": "ok", "inserted_id": inserted_id, "affected_rows": 1}
+    except Exception as e:
+        return {"error": "插入失败", "detail": str(e)}
+
+
+@app.route("/group_files", methods=["POST"])
+def create_group_file():
+    """
+    新增 group_files 记录
+    - 支持单条：body 为 JSON 对象
+    - 支持批量：body 为 JSON 数组
+    """
+    data = request.get_json(force=True)
+
+    # 批量
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_group_file(rec)
+            results.append(res)
+        # 有错误时返回 207，和 /records 接口风格保持一致
+        has_error = any(isinstance(r, dict) and r.get("error") for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    # 单条
+    res = _insert_one_group_file(data)
+    if isinstance(res, dict) and res.get("error"):
+        # 和上面 /records 保持类似语义，这里直接 200 兼容现有调用方式
+        return jsonify(res), 200
+    return jsonify(res), 201
+
+
+@app.route("/group_files/<int:record_id>", methods=["GET"])
+def get_group_file(record_id):
+    """按 id 查询 group_files 记录"""
+    sql = f"SELECT * FROM `{GROUP_FILES_TABLE}` WHERE `id`=%s"
+    rows = execute_query(sql, (record_id,), fetch=True)
+    if not rows:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify(rows[0])
+
+
+@app.route("/group_files/<int:record_id>", methods=["PUT"])
+def update_group_file(record_id):
+    """
+    按 id 更新 group_files 表
+    - body 为要更新的字段，忽略 id
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "body 必须是 JSON 对象"}), 400
+
+    updates = [f"`{k}`=%s" for k in data if k in GROUP_FILES_FIELDS and k != "id"]
+    if not updates:
+        return jsonify({"error": "无可更新字段"}), 400
+
+    sql = f"UPDATE `{GROUP_FILES_TABLE}` SET {', '.join(updates)} WHERE `id`=%s"
+    params = tuple(data[k] for k in data if k in GROUP_FILES_FIELDS and k != "id") + (record_id,)
+
+    affected = execute_query(sql, params)
+    if affected == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "updated_id": record_id})
+
+
+@app.route("/group_files/<int:record_id>", methods=["DELETE"])
+def delete_group_file(record_id):
+    """按 id 删除 group_files 记录"""
+    sql = f"DELETE FROM `{GROUP_FILES_TABLE}` WHERE `id`=%s"
+    deleted = execute_query(sql, (record_id,))
+    if deleted == 0:
+        return jsonify({"error": "未找到该记录"}), 404
+    return jsonify({"status": "ok", "deleted_id": record_id})
+
+
+# ==========================
 # 邮箱账号密码表：CRUD 接口
 # ==========================
 
@@ -2138,6 +2361,113 @@ def list_email_accounts():
             del row["password"]
 
     return jsonify(rows)
+
+
+@app.route("/email_accounts/credentials", methods=["POST"])
+def list_email_account_credentials():
+    """
+    内部接口：返回邮箱账号 + 加密密码（不解密）
+    - 只允许 POST JSON body，禁止 URL query（避免进 nginx/flask 日志）
+    - 可选：如果设置了环境变量 EMAIL_ACCOUNTS_CREDENTIALS_TOKEN，则要求请求携带 token
+      - Header: Authorization: Bearer <token>  或  X-Internal-Token: <token>
+    - body 可选字段：
+      - email_account: 指定单个账号；不传则返回全部
+    """
+    if request.args:
+        return _json_error("隐私要求：/email_accounts/credentials 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    # 可选 token 保护（不破坏现有部署：未配置 token 时不强制）
+    required_token = os.getenv("EMAIL_ACCOUNTS_CREDENTIALS_TOKEN") or ""
+    if required_token:
+        auth = request.headers.get("Authorization", "") or ""
+        internal = request.headers.get("X-Internal-Token", "") or ""
+        got = ""
+        if auth.lower().startswith("bearer "):
+            got = auth.split(" ", 1)[1].strip()
+        elif internal:
+            got = internal.strip()
+        if got != required_token.strip():
+            return _json_error("未授权", 401, code="unauthorized")
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    email_account = data.get("email_account")
+    if email_account is not None:
+        email_account = str(email_account).strip()
+
+    try:
+        if email_account:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            rows = execute_query(sql, (email_account,), fetch=True)
+        else:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            rows = execute_query(sql, (), fetch=True)
+        return jsonify({"ok": True, "results": rows})
+    except Exception as e:
+        return _json_error("读取邮箱账号失败", 500, code="email_accounts_credentials_failed", detail=str(e))
+
+
+@app.route("/email_accounts/plain_credentials", methods=["POST"])
+def list_email_account_plain_credentials():
+    """
+    内部接口：返回邮箱账号 + 明文密码（会解密）
+    - 只允许 POST JSON body，禁止 URL query（避免进 nginx/flask 日志）
+    - 强制 token 保护：必须设置环境变量 EMAIL_ACCOUNTS_PLAINTEXT_TOKEN
+      - Header: Authorization: Bearer <token>  或  X-Internal-Token: <token>
+    - body 可选字段：
+      - email_account: 指定单个账号；不传则返回全部
+    """
+    if request.args:
+        return _json_error("隐私要求：/email_accounts/plain_credentials 不允许使用 URL query 传参，请全部放到 JSON body", 400)
+
+    required_token = os.getenv("EMAIL_ACCOUNTS_PLAINTEXT_TOKEN") or ""
+    if not required_token:
+        return _json_error("服务端未配置 EMAIL_ACCOUNTS_PLAINTEXT_TOKEN，拒绝提供明文密码接口", 403, code="plaintext_token_not_configured")
+
+    auth = request.headers.get("Authorization", "") or ""
+    internal = request.headers.get("X-Internal-Token", "") or ""
+    got = ""
+    if auth.lower().startswith("bearer "):
+        got = auth.split(" ", 1)[1].strip()
+    elif internal:
+        got = internal.strip()
+    if got != required_token.strip():
+        return _json_error("未授权", 401, code="unauthorized")
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return _json_error("body 必须是 JSON object", 400)
+
+    email_account = data.get("email_account")
+    if email_account is not None:
+        email_account = str(email_account).strip()
+
+    try:
+        if email_account:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
+            rows = execute_query(sql, (email_account,), fetch=True)
+        else:
+            sql = f"SELECT `email_account`, `encrypted_password` FROM `{EMAIL_ACCOUNT_TABLE}` ORDER BY `id`"
+            rows = execute_query(sql, (), fetch=True)
+
+        results = []
+        for r in rows or []:
+            acc = r.get("email_account")
+            enc = r.get("encrypted_password")
+            if not acc or not enc:
+                continue
+            try:
+                pwd = decrypt_password(enc)
+            except Exception as e:
+                results.append({"email_account": acc, "password": None, "decrypt_error": str(e)})
+                continue
+            results.append({"email_account": acc, "password": pwd})
+
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return _json_error("读取邮箱账号失败", 500, code="email_accounts_plain_credentials_failed", detail=str(e))
 
 
 @app.route("/email_accounts/check", methods=["GET", "POST"])
@@ -2213,6 +2543,13 @@ def _insert_one_email_account(data: dict):
         encrypted_password = encrypt_password(password)
     except Exception as e:
         return {"error": f"密码加密失败: {str(e)}"}
+
+    # 测试邮箱登录
+    imap_server = data.get("imap_server") or DEFAULT_IMAP_SERVER
+    imap_port = data.get("imap_port") or DEFAULT_IMAP_PORT
+    login_success, login_error = test_email_login(email_account, password, imap_server, imap_port)
+    if not login_success:
+        return {"status": "login fail", "error": login_error}
 
     # 检查是否已存在
     check_sql = f"SELECT `id` FROM `{EMAIL_ACCOUNT_TABLE}` WHERE `email_account`=%s"
@@ -2522,11 +2859,237 @@ def check_email_handled():
     except Exception as e:
         return _json_error("查询失败", 500, code="check_failed", detail=str(e))
 
+# ==========================
+# safetybot_table 表：CRUD 接口
+# ==========================
+
+def _parse_safety_date(raw_date):
+    """
+    統一日期解析邏輯：支持時間戳(秒/毫秒)、日期字串
+    返回 YYYY-MM-DD 格式
+    """
+    import pytz
+    hk_tz = pytz.timezone("Asia/Hong_Kong")
+    try:
+        if isinstance(raw_date, (int, float)):
+            # 判斷是秒還是毫秒 (10位數是秒，13位數是毫秒)
+            ts = raw_date / 1000.0 if raw_date > 1e11 else raw_date
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            return dt_obj.strftime("%Y-%m-%d")
+        elif isinstance(raw_date, str) and raw_date.isdigit():
+            raw_ts = float(raw_date)
+            ts = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
+            dt_obj = datetime.fromtimestamp(ts, hk_tz)
+            return dt_obj.strftime("%Y-%m-%d")
+        else:
+            # 嘗試解析字串
+            parsed_dt = date_parser.parse(str(raw_date))
+            return parsed_dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+@app.route("/safety/records", methods=["GET"])
+def list_safety_records():
+    """
+    查询安全记录列表
+    - 支持按 date, zone, item_type 过滤
+    """
+    query_filters = request.args.to_dict()
+    body_filters = request.get_json(silent=True) or {}
+    if not isinstance(body_filters, dict):
+        body_filters = {}
+
+    filters = {**body_filters, **query_filters}
+    conditions = []
+    params = []
+
+    for k, v in filters.items():
+        if k in SAFETY_FIELDS:
+            if k == "date" and v:
+                parsed_v = _parse_safety_date(v)
+                if parsed_v:
+                    conditions.append(f"`{k}`=%s")
+                    params.append(parsed_v)
+                continue
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{SAFETY_TABLE}` {where} ORDER BY `date` DESC, `zone`, `item_type`, `id` DESC"
+    
+    try:
+        rows = execute_query(sql, tuple(params), fetch=True)
+        # 轉換 date 為字串避免 JSON 序列化錯誤
+        for row in rows:
+            if isinstance(row.get('date'), (date, datetime)):
+                row['date'] = row['date'].strftime('%Y-%m-%d')
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": "查詢失敗", "detail": str(e)}), 500
+
+def _insert_one_safety_record(data: dict):
+    """
+    分組自增邏輯：
+    維度：date + zone + item_type
+    支持傳入日期字串 (YYYY-MM-DD) 或 Unix 時間戳 (秒/毫秒)
+    """
+    import pytz
+    hk_tz = pytz.timezone("Asia/Hong_Kong")
+
+    # 1. 基礎校驗
+    group_id = data.get("group_id")
+    raw_date = data.get("date")
+    item_type = data.get("item_type")
+    zone = data.get("zone")
+    description = data.get("description")
+    manual_id = data.get("id")  # 支持手動傳入 ID
+
+    if not all([group_id, raw_date, item_type, zone, description]):
+        return {"error": "缺少必填字段: group_id, date, item_type, zone, description"}
+
+    # 2. 解析日期 (支持時間戳和字串)
+    date_str = _parse_safety_date(raw_date)
+    if not date_str:
+        return {"error": "日期格式錯誤，請傳入正確的時間戳或日期字串"}
+
+    # 3. 規範 item_type
+    valid_types = ["緊急", "非緊急", "次緊急"]
+    item_type = str(item_type).strip()
+    if item_type not in valid_types:
+        return {"error": f"無效的 item_type，必須是: {', '.join(valid_types)}"}
+
+    # 4. 數據操作
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # 獲取鎖，防止併發衝突
+            find_id_sql = f"""
+                SELECT COALESCE(MAX(`id`), 0) + 1 AS next_id 
+                FROM `{SAFETY_TABLE}` 
+                WHERE `group_id` = %s AND `date` = %s AND `item_type` = %s AND `zone` = %s 
+                FOR UPDATE
+            """
+            cur.execute(find_id_sql, (group_id, date_str, item_type, zone))
+            calc_id = cur.fetchone()['next_id']
+
+            # 如果手動傳入了 id，則使用手動的；否則使用計算出來的
+            final_id = int(manual_id) if manual_id is not None else calc_id
+
+            # 插入數據
+            insert_sql = f"""
+                INSERT INTO `{SAFETY_TABLE}` (`group_id`, `date`, `item_type`, `zone`, `id`, `description`)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            cur.execute(insert_sql, (
+                group_id, date_str, item_type, zone, 
+                final_id, description
+            ))
+            
+        conn.commit()
+        return {
+            "ok": True, 
+            "id": final_id, 
+            "group_id": group_id,
+            "item_type": item_type,
+            "zone": zone,
+            "date": date_str
+        }
+    except Exception as e:
+        if conn: conn.rollback()
+        return {"ok": False, "error": "數據插入失敗", "detail": str(e)}
+    finally:
+        if conn: conn.close()
+
+@app.route("/safety/records", methods=["POST"])
+def create_safety_record():
+    """
+    新增安全記錄
+    支持單條或批量
+    """
+    data = request.get_json(force=True)
+
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = _insert_one_safety_record(rec)
+            results.append(res)
+        has_error = any(isinstance(r, dict) and (not r.get("ok") or r.get("error")) for r in results)
+        return jsonify(results), 207 if has_error else 201
+
+    res = _insert_one_safety_record(data)
+    if isinstance(res, dict) and (not res.get("ok") or res.get("error")):
+        return jsonify(res), 400
+    return jsonify(res), 201
 
 
+@app.route("/safety/records", methods=["PUT"])
+def update_safety_record():
+    """
+    修改安全記錄描述
+    需要 body 提供: date, zone, item_type, id 以及新的 description
+    """
+    data = request.get_json(force=True)
+    required = ["group_id", "date", "zone", "item_type", "id", "description"]
+    for req in required:
+        if data.get(req) is None:
+            return jsonify({"error": f"缺少字段: {req}"}), 400
+    
+    # 統一解析日期 (支持時間戳)
+    date_str = _parse_safety_date(data['date'])
+    if not date_str:
+        return jsonify({"error": "日期格式錯誤"}), 400
+
+    # 定位一條記錄並更新描述
+    sql = f"""
+        UPDATE `{SAFETY_TABLE}` SET `description` = %s 
+        WHERE `group_id` = %s AND `date` = %s AND `zone` = %s AND `item_type` = %s AND `id` = %s
+    """
+    params = (
+        data['description'], 
+        data['group_id'], date_str, data['zone'], data['item_type'], data['id']
+    )
+    
+    try:
+        affected = execute_query(sql, params)
+        if affected == 0:
+            return jsonify({"error": "未找到匹配的記錄"}), 404
+        return jsonify({"ok": True, "message": "修改成功"})
+    except Exception as e:
+        return jsonify({"error": "修改失敗", "detail": str(e)}), 500
 
 
+@app.route("/safety/records", methods=["DELETE"])
+@app.route("/safety/records/delete", methods=["POST"])
+def delete_safety_record():
+    """
+    刪除安全記錄
+    支持 DELETE 方法或 POST 方法 (為了繞過某些 WAF 對 DELETE body 的限制)
+    需要 body 提供: group_id, date, zone, item_type, id
+    """
+    data = request.get_json(force=True)
+    required = ["group_id", "date", "zone", "item_type", "id"]
+    for req in required:
+        if data.get(req) is None:
+            return jsonify({"error": f"缺少定位字段: {req}"}), 400
 
+    # 統一解析日期 (支持時間戳)
+    date_str = _parse_safety_date(data['date'])
+    if not date_str:
+        return jsonify({"error": "日期格式錯誤"}), 400
+
+    sql = f"""
+        DELETE FROM `{SAFETY_TABLE}` 
+        WHERE `group_id` = %s AND `date` = %s AND `zone` = %s AND `item_type` = %s AND `id` = %s
+    """
+    params = (data['group_id'], date_str, data['zone'], data['item_type'], data['id'])
+    
+    try:
+        affected = execute_query(sql, params)
+        if affected == 0:
+            return jsonify({"error": "未找到匹配的記錄"}), 404
+        return jsonify({"ok": True, "message": "刪除成功"})
+    except Exception as e:
+        return jsonify({"error": "刪除失敗", "detail": str(e)}), 500
 
 
 if __name__ == "__main__":

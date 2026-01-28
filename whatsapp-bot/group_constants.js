@@ -8,18 +8,19 @@ const GROUP_ID_6 = '120363162893788546@g.us'; // 啓德醫院BLW🅰️熱工序
 const GROUP_ID_7 = '120363283336621477@g.us'; //  啟德醫院 🅰️𨋢膽台
 const GROUP_ID_8 = '120363423214854498@g.us'; // 打窿工序测试群组
 const GROUP_ID_9 = '120363420660094468@g.us'; // 牆棚架工作测试群组
+const GROUP_ID_10 = '120363423057141205@g.us'; // 熱工序及巡火匯報测试群组
 
 // 打窿群组定义
 const DRILL_GROUPS = [
-    GROUP_ID_5,
-    GROUP_ID_8
+  GROUP_ID_5,
+  GROUP_ID_8
 ];
 
 // 外墙棚架群组定义
 const EXTERNAL_SCAFFOLDING_GROUPS = [
-    GROUP_ID_2,
-    GROUP_ID_4,
-    GROUP_ID_9
+  GROUP_ID_2,
+  GROUP_ID_4,
+  GROUP_ID_9
 ];
 
 // 完全静默群组配置
@@ -31,6 +32,11 @@ const BLACKLIST_GROUPS = [
 // 错误缺失提醒群组配置
 const ERROR_REPLY_GROUPS = [
   GROUP_ID_2
+];
+
+const HEAT_WORK_GROUPS = [
+  GROUP_ID_6,
+  GROUP_ID_10
 ];
 
 module.exports = {
@@ -46,7 +52,8 @@ module.exports = {
   DRILL_GROUPS,
   EXTERNAL_SCAFFOLDING_GROUPS,
   BLACKLIST_GROUPS,
-  ERROR_REPLY_GROUPS
+  ERROR_REPLY_GROUPS,
+  HEAT_WORK_GROUPS
 };
 
 
