@@ -671,9 +671,14 @@ function appendLog(groupId, message) {
 function formatOTSummary(data) {
   if (!Array.isArray(data) || data.length === 0) return "今日無工地記錄";
   const dateStr = parseDate(data[0].bstudio_create_time || '');
-  // 过滤满足条件的记录，并保持序号从1到n
+  // 过滤满足条件的记录，并按 application_id 排序 (A -> B -> C)
   const details = data
     .filter(rec => parseInt(rec.xiaban) === 0 && parseInt(rec.part_leave_number || 0) < parseInt(rec.number || 0))
+    .sort((a, b) => {
+      const idA = a.application_id || '';
+      const idB = b.application_id || '';
+      return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+    })
     .map((rec, i) => {
       const loc = rec.location || '';
       const sub = rec.subcontrator || rec.subcontractor || '';
