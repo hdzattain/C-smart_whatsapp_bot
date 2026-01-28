@@ -68,6 +68,33 @@ const WIKI_TABLE_ID = 'tblyXhKKu9y3AALG';
 const PLAN_FASTGPT_URL = 'https://rgamhdso.sealoshzh.site/api/v1/chat/completions';
 const PLAN_FASTGPT_API_KEY = process.env.PLAN_FASTGPT_API_KEY || '';
 const CED_FASTGPT_API_KEY = process.env.CED_FASTGPT_API_KEY || '';
+const GROUP_FILES_API_URL = process.env.GROUP_FILES_API_URL || '';
+
+// AdminGroups：避免 cron 叠加并发（上一轮未结束下一轮又启动）
+let _adminGroupsDownloadRunning = false;
+// SafetyBot 控制标志
+const SAFETYBOT_LOG_ONLY = process.env.SAFETYBOT_LOG_ONLY === 'true'; // 只执行日志，不发送text或reaction
+const SAFETYBOT_REACTION_ONLY = process.env.SAFETYBOT_REACTION_ONLY === 'true'; // 只发reaction，不发text
+
+// 特定群组覆盖配置：这些群组将临时禁用 SafetyBot 标志（从环境变量读取，逗号分隔）
+const SAFETYBOT_OVERRIDE_GROUPS = process.env.SAFETYBOT_OVERRIDE_GROUPS 
+  ? process.env.SAFETYBOT_OVERRIDE_GROUPS.split(',').map(g => g.trim())
+  : []; // 从环境变量读取，未配置则为空数组
+
+// 根据群组ID获取 SafetyBot 标志值（支持群组级别的覆盖）
+function getSafetyBotLogOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 LOG_ONLY
+  }
+  return SAFETYBOT_LOG_ONLY;
+}
+
+function getSafetyBotReactionOnly(groupId) {
+  if (SAFETYBOT_OVERRIDE_GROUPS.includes(groupId)) {
+    return false; // 特定群组强制禁用 REACTION_ONLY
+  }
+  return SAFETYBOT_REACTION_ONLY;
+}
 // Lark 事件回调配置
 // const LARK_WEBHOOK_PORT = process.env.LARK_WEBHOOK_PORT || 3001;
 const LARK_TARGET_GROUPS = process.env.LARK_TARGET_GROUPS 
@@ -140,9 +167,23 @@ function ensureDir(dir) {
 function appendLog(groupId, message) {
   const groupDir = path.join(LOG_DIR, groupId || 'default');
   ensureDir(groupDir);
-  const dateStr = new Date().toISOString().slice(0, 10);
+
+  // 1. 获取当前时间并手动偏移 8 小时处理文件名
+  const now = new Date();
+  const utc8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+  const dateStr = utc8Time.toISOString().slice(0, 10);
+
+  // 2. 格式化日志内容的时间戳
+  // 使用 'sv-SE' (瑞典语) 是一种小技巧，它能直接得到 YYYY-MM-DD HH:mm:ss 格式，非常整齐
+  const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+  
+  try {
+    fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
+  } catch (err) {
+    console.error('Failed to write log:', err);
+  }
 }
 
 // 统一 JID
@@ -987,6 +1028,230 @@ async function uploadFileToFeishuWithSDK(filepath, options = {}) {
   }
 }
 
+ 
+// ========== AdminGroups: 拉群文件并下载为本地图片 ==========
+// tenant_access_token (internal) 缓存
+let _tenantTokenCache = { token: null, expireAt: 0 };
+
+async function getTenantAccessTokenInternalCached() {
+  const now = Date.now();
+  if (_tenantTokenCache.token && _tenantTokenCache.expireAt && now < _tenantTokenCache.expireAt) {
+    return _tenantTokenCache.token;
+  }
+
+  const appId = process.env.LARK_APP_ID || LARK_APP_ID;
+  const appSecret = process.env.LARK_APP_SECRET || LARK_APP_SECRET;
+  if (!appId || !appSecret || appId === 'app id' || appSecret === 'app secret') {
+    throw new Error('未配置 LARK_APP_ID / LARK_APP_SECRET，无法获取 tenant_access_token');
+  }
+
+  const url = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/';
+  const res = await axios.post(
+    url,
+    { app_id: appId, app_secret: appSecret },
+    { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+
+  const data = res?.data || {};
+  const token = data.tenant_access_token;
+  const expire = Number(data.expire || 0);
+  if (!token) {
+    throw new Error(`获取 tenant_access_token 失败: ${JSON.stringify(data)}`);
+  }
+
+  // 提前 60s 过期，避免临界时间出错
+  _tenantTokenCache = {
+    token,
+    expireAt: Date.now() + Math.max(0, expire - 60) * 1000
+  };
+  return token;
+}
+
+function isoDateInTZ(tz = 'Asia/Hong_Kong', d = new Date()) {
+  // en-CA 输出 YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(d);
+}
+
+function safeFilename(name = '') {
+  const s = String(name || '').trim() || 'file';
+  // 替换不安全字符
+  return s.replace(/[\\/:*?"<>|\r\n\t]/g, '_');
+}
+
+function parseContentDispositionFilename(disposition = '') {
+  const cd = String(disposition || '');
+  // RFC5987: filename*=UTF-8''xxx
+  const mStar = cd.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (mStar && mStar[1]) {
+    try {
+      return decodeURIComponent(mStar[1].trim().replace(/^"(.*)"$/, '$1'));
+    } catch {
+      return mStar[1].trim().replace(/^"(.*)"$/, '$1');
+    }
+  }
+  const m = cd.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  if (m && m[2]) return m[2].trim();
+  return '';
+}
+
+async function fetchLatestGroupFileRecord(groupId, dateISO) {
+  // 配置兜底：未配置时直接给出明确错误，避免 axios 报 "Invalid URL" 刷屏
+  if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+    throw new Error(
+      `GROUP_FILES_API_URL 未配置或不是有效 http(s) URL：${JSON.stringify(GROUP_FILES_API_URL)}`
+    );
+  }
+
+  // 后端支持 GET JSON body；bstudio_create_time 传 YYYY-MM-DD 会按当天范围查
+  const payload = {
+    group_id: groupId,
+    bstudio_create_time: dateISO
+  };
+
+  const resp = await axios.request({
+    method: 'GET',
+    url: GROUP_FILES_API_URL,
+    headers: { 'Content-Type': 'application/json' },
+    data: payload,
+    timeout: 20000
+  });
+
+  const rows = resp?.data;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+
+  // 后端已按 id DESC 排序；这里仍做一次兜底排序
+  const sorted = rows.slice().sort((a, b) => {
+    const ta = new Date(a?.bstudio_create_time || 0).getTime() || 0;
+    const tb = new Date(b?.bstudio_create_time || 0).getTime() || 0;
+    if (tb !== ta) return tb - ta;
+    return (Number(b?.id || 0) - Number(a?.id || 0));
+  });
+
+  return sorted[0] || null;
+}
+
+async function downloadFeishuMediaToLocal({ fileToken, suggestedFileName, saveDir }) {
+  if (!fileToken) throw new Error('fileToken 为空');
+  ensureDir(saveDir);
+
+  const token = await getTenantAccessTokenInternalCached();
+  const url = `https://open.feishu.cn/open-apis/drive/v1/medias/${encodeURIComponent(fileToken)}/download`;
+
+  const res = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  const contentType = String(res.headers?.['content-type'] || '').toLowerCase();
+  const cd = String(res.headers?.['content-disposition'] || '');
+  const filenameFromHeader = parseContentDispositionFilename(cd);
+
+  let filename = safeFilename(filenameFromHeader || suggestedFileName || `media_${Date.now()}`);
+  // 补扩展名
+  if (!/\.[a-z0-9]{2,8}$/i.test(filename)) {
+    const ext = mime.extension(contentType) || 'bin';
+    filename = `${filename}.${ext}`;
+  }
+
+  const outPath = path.join(saveDir, filename);
+  await fsPromises.writeFile(outPath, Buffer.from(res.data));
+  return { outPath, filename, contentType, bytes: Buffer.byteLength(res.data) };
+}
+
+async function handleAdminGroupDailyFileDownload(client, adminGroupId, whenLabel = '') {
+  const dateISO = isoDateInTZ('Asia/Hong_Kong');
+  appendLog(adminGroupId, `[AdminGroupFiles] 开始处理 ${whenLabel} 日期=${dateISO}`);
+  const t0 = Date.now();
+  console.log(`[AdminGroupFiles] step=begin group=${adminGroupId} label=${whenLabel} date=${dateISO}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=begin group=${adminGroupId} label=${whenLabel} date=${dateISO}`);
+
+  // 配置缺失时直接跳过，避免定时任务持续报错刷屏
+  if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+    const tip = `[AdminGroupFiles] 跳过：未配置 GROUP_FILES_API_URL（需要 http(s) URL），当前=${JSON.stringify(GROUP_FILES_API_URL)}`;
+    console.warn(tip);
+    appendLog(adminGroupId, tip);
+    return null;
+  }
+
+  console.log(`[AdminGroupFiles] step=fetchLatestRecord group=${adminGroupId}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=fetchLatestRecord group=${adminGroupId}`);
+  const rec = await fetchLatestGroupFileRecord(adminGroupId, dateISO);
+  if (!rec) {
+    appendLog(adminGroupId, `[AdminGroupFiles] 未找到当日文件: group_id=${adminGroupId}, date=${dateISO}`);
+    console.log(`[AdminGroupFiles] step=noRecord group=${adminGroupId} ms=${Date.now() - t0}`);
+    appendLog(adminGroupId, `[AdminGroupFiles] step=noRecord group=${adminGroupId} ms=${Date.now() - t0}`);
+    return null;
+  }
+
+  const fileToken = rec.file_url;
+  const fileName = rec.file_name;
+  const createdAt = rec.bstudio_create_time;
+
+  if (!fileToken) {
+    appendLog(adminGroupId, `[AdminGroupFiles] 记录缺少 file_url(file_token): ${JSON.stringify(rec)}`);
+    console.log(`[AdminGroupFiles] step=badRecordMissingToken group=${adminGroupId} ms=${Date.now() - t0}`);
+    appendLog(adminGroupId, `[AdminGroupFiles] step=badRecordMissingToken group=${adminGroupId} ms=${Date.now() - t0}`);
+    return null;
+  }
+
+  console.log(`[AdminGroupFiles] step=downloadFromFeishu group=${adminGroupId} token=${String(fileToken).slice(0, 12)}...`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=downloadFromFeishu group=${adminGroupId} token=${String(fileToken).slice(0, 12)}...`);
+  const saveDir = path.join(TMP_DIR, 'admin_group_files', safeFilename(adminGroupId), dateISO);
+  const dl = await downloadFeishuMediaToLocal({
+    fileToken,
+    suggestedFileName: fileName,
+    saveDir
+  });
+
+  appendLog(
+    adminGroupId,
+    `[AdminGroupFiles] 下载成功: token=${fileToken}, createdAt=${createdAt}, name=${fileName} => ${dl.outPath} (${dl.bytes} bytes, ${dl.contentType})`
+  );
+  console.log('[AdminGroupFiles] 下载成功:', { adminGroupId, dateISO, fileToken, fileName, outPath: dl.outPath });
+  appendLog(adminGroupId, `[AdminGroupFiles] 下载成功: outPath=${dl.outPath} bytes=${dl.bytes} contentType=${dl.contentType}`);
+  
+  // === 发送图片到指定 WhatsApp 群 ===
+  try {
+    const targetGroupIdsRaw =
+      process.env.AI_ANDACHEN_ADMIN_TEST_GROUPS ||
+      '';
+    const targetGroupIds = String(targetGroupIdsRaw)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    const isImage = /^image\//i.test(dl.contentType) || /\.(jpg|jpeg|png|gif|webp)$/i.test(dl.filename);
+    
+    if (isImage) {
+      for (const targetGroupId of targetGroupIds) {
+        await client.sendImage(
+          targetGroupId,
+          dl.outPath,
+          dl.filename,
+          ''
+        );
+        console.log(`[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+        appendLog(adminGroupId, `[AdminGroupFiles] 已发送图片到群 ${targetGroupId}: ${dl.outPath}`);
+      }
+    } else {
+      console.log(`[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}, filename=${dl.filename}`);
+      appendLog(adminGroupId, `[AdminGroupFiles] 文件不是图片类型，跳过发送: contentType=${dl.contentType}`);
+    }
+  } catch (e) {
+    console.error('[AdminGroupFiles] 发送图片到 WhatsApp 群失败:', e);
+    appendLog(adminGroupId, `[AdminGroupFiles] 发送图片到 WhatsApp 群失败: ${e.message || e}`);
+  }
+  
+  console.log(`[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
+  appendLog(adminGroupId, `[AdminGroupFiles] step=done group=${adminGroupId} ms=${Date.now() - t0}`);
+  return { record: rec, download: dl };
+}
+
 function containsSummaryKeyword(text) {
   const keywords = [
     '总结', '概括', '总结一下', '整理情况', '汇总', '回顾',
@@ -1609,7 +1874,6 @@ async function handlePlanBot(client, msg, groupId, isGroup) {
   }
 }
 
-
 async function handleSafetyBot(client, msg, groupId, isGroup) {
   try {
     // 步骤1: 提取发送人信息（缓存以避免重复调用）
@@ -1651,11 +1915,15 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     // 步骤6: 检查是否为空或无效；早返回
     const isImage = msg.type === 'image' || msg.type === 'album';
     const isMedia = isImage || msg.type === 'document';  // 可扩展其他媒体
+    const logOnly = getSafetyBotLogOnly(groupId);
     if (!query.trim() || query === '[未识别内容]') {
-      if (!isGroup || shouldReply(msg, BOT_NAME)) {
+      if (!logOnly && (!isGroup || shouldReply(msg, BOT_NAME))) {
         await client.reply(msg.from, '未识别到有效内容。', msg.id);
         console.log('未识别到有效内容，已回复用户');
         appendLog(groupId, '未识别到有效内容，已回复用户');
+      } else if (logOnly) {
+        console.log('[LOG_ONLY模式] 跳过发送"未识别到有效内容"回复');
+        appendLog(groupId, '[LOG_ONLY模式] 未识别到有效内容，跳过回复');
       }
       if (!isMedia) {
         console.log('当前的消息类型是 直接返回', msg.type);
@@ -1738,8 +2006,12 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     } catch (e) {
       console.log(`FastGPT 调用失败: ${e.message}`);
       appendLog(groupId, `FastGPT 调用失败: ${e.message}`);
-      if (needReply) {
+      const logOnly = getSafetyBotLogOnly(groupId);
+      if (needReply && !logOnly) {
         await client.reply(msg.from, '调用 FastGPT 失败，请稍后再试。', msg.id);
+      } else if (needReply && logOnly) {
+        console.log('[LOG_ONLY模式] 跳过发送"调用 FastGPT 失败"回复');
+        appendLog(groupId, '[LOG_ONLY模式] FastGPT 调用失败，跳过回复');
       }
       return;
     }
@@ -1747,6 +2019,15 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     // 步骤10: 执行回复或反应
     if (needReply) {
       try {
+        // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
+        const logOnly = getSafetyBotLogOnly(groupId);
+        const reactionOnly = getSafetyBotReactionOnly(groupId);
+        if (logOnly) {
+          console.log('[LOG_ONLY模式] 跳过发送，仅记录日志');
+          appendLog(groupId, `[LOG_ONLY模式] FastGPT响应: ${replyStr}`);
+          return;
+        }
+
         // 检查是否包含日期分段标记
         const hasDateSegments = replyStr.includes('<<今日>>') || 
                                 replyStr.includes('<<昨日>>') || 
@@ -1778,15 +2059,21 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             }
           }
           
-          // 按顺序发送每条消息
-          for (const segment of segments) {
-            console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
-            appendLog(groupId, `尝试发送分段消息`);
-            await client.reply(msg.from, segment, msg.id);
-            console.log('已发送分段消息');
-            appendLog(groupId, '已发送分段消息');
-            // 添加短暂延迟，避免消息发送过快
-            await new Promise(resolve => setTimeout(resolve, 500));
+          // 如果设置了 REACTION_ONLY flag，不发送分段消息
+          if (!reactionOnly) {
+            // 按顺序发送每条消息
+            for (const segment of segments) {
+              console.log(`尝试发送分段消息: ${segment.substring(0, 50)}...`);
+              appendLog(groupId, `尝试发送分段消息`);
+              await client.reply(msg.from, segment, msg.id);
+              console.log('已发送分段消息');
+              appendLog(groupId, '已发送分段消息');
+              // 添加短暂延迟，避免消息发送过快
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          } else {
+            console.log('[REACTION_ONLY模式] 跳过发送分段消息');
+            appendLog(groupId, '[REACTION_ONLY模式] 跳过发送分段消息');
           }
         } else {
           // 原有的逻辑：检查 FastGPT 返回内容是否包含"成功"或"失败"
@@ -1806,13 +2093,16 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             console.log('已发送反应');
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
             
-            // 只有包含"創建成功"时才发送 reply
-            if (hasCreateSuccess) {
+            // 只有包含"創建成功"时才发送 reply（如果未设置 REACTION_ONLY）
+            if (hasCreateSuccess && !reactionOnly) {
               console.log(`尝试回复用户: ${replyStr}`);
               appendLog(groupId, `尝试回复用户: ${replyStr}`);
               await client.reply(msg.from, replyStr, msg.id);
               console.log('已回复用户');
               appendLog(groupId, '已回复用户');
+            } else if (hasCreateSuccess && reactionOnly) {
+              console.log('[REACTION_ONLY模式] 跳过发送文本回复');
+              appendLog(groupId, '[REACTION_ONLY模式] 跳过发送文本回复');
             }
           } else if (reactionEmoji === '❌') {
             // 包含"失败"：只发送 reaction，不发送 reply
@@ -1822,22 +2112,30 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
             console.log('已发送反应');
             appendLog(groupId, `已发送反应: ${reactionEmoji}`);
             
-            // 如果包含「原始文本與引用文本不一致」，还要回复
-            if (replyStr.includes('原始文本與引用文本不一致')) {
+            // 如果包含「原始文本與引用文本不一致」，还要回复（如果未设置 REACTION_ONLY）
+            if (replyStr.includes('原始文本與引用文本不一致') && !reactionOnly) {
               const errorReply = '當前項目與引用項目不一致，請保持引用項目和當前檢視或整改項目一致';
               console.log(`尝试回复用户: ${errorReply}`);
               appendLog(groupId, `尝试回复用户: ${errorReply}`);
               await client.reply(msg.from, errorReply, msg.id);
               console.log('已回复用户');
               appendLog(groupId, '已回复用户');
+            } else if (replyStr.includes('原始文本與引用文本不一致') && reactionOnly) {
+              console.log('[REACTION_ONLY模式] 跳过发送错误提示文本');
+              appendLog(groupId, '[REACTION_ONLY模式] 跳过发送错误提示文本');
             }
           } else {
-            // 其他情况使用 reply
-            console.log(`尝试回复用户: ${replyStr}`);
-            appendLog(groupId, `尝试回复用户: ${replyStr}`);
-            await client.reply(msg.from, replyStr, msg.id);
-            console.log('已回复用户');
-            appendLog(groupId, '已回复用户');
+            // 其他情况使用 reply（如果未设置 REACTION_ONLY）
+            if (!reactionOnly) {
+              console.log(`尝试回复用户: ${replyStr}`);
+              appendLog(groupId, `尝试回复用户: ${replyStr}`);
+              await client.reply(msg.from, replyStr, msg.id);
+              console.log('已回复用户');
+              appendLog(groupId, '已回复用户');
+            } else {
+              console.log('[REACTION_ONLY模式] 跳过发送文本回复');
+              appendLog(groupId, '[REACTION_ONLY模式] 跳过发送文本回复');
+            }
           }
         }
       } catch (e) {
@@ -1856,8 +2154,6 @@ async function handleSafetyBot(client, msg, groupId, isGroup) {
     appendLog(msg.from || groupId, '处理消息时发生异常');
   }
 }
-
-
 // 辅助函数：提取消息纯文本（新引入，避免污染）
 async function extractMessageText(client, msg) {
   switch (msg.type) {
@@ -2012,7 +2308,6 @@ async function handleProgressSummary(client, groupId) {
     appendLog(groupId, `[ERR] 发送 AI 进度总结失败: ${err.message}`);
   }
 }
-
 // 往日总结函数（昨日總結 + 往日總結）
 async function handlePastSummary(client, groupId) {
   try {
@@ -2050,6 +2345,14 @@ async function handlePastSummary(client, groupId) {
     // 发送消息（只发送昨日和前日，跳过今日）
     if (replyStr) {
       try {
+        // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
+        const logOnly = getSafetyBotLogOnly(groupId);
+        if (logOnly) {
+          console.log('[LOG_ONLY模式] 跳过发送往日總結，仅记录日志');
+          appendLog(groupId, `[LOG_ONLY模式] 往日總結内容: ${replyStr}`);
+          return;
+        }
+
         // 检查是否包含日期分段标记
         const hasDateSegments = replyStr.includes('<<今日>>') || 
                                 replyStr.includes('<<昨日>>') || 
@@ -2152,6 +2455,14 @@ async function handleTodaySummary(client, groupId) {
     // 发送消息
     if (replyStr) {
       try {
+        // 如果设置了 LOG_ONLY flag，只记录日志，不发送任何消息
+        const logOnly = getSafetyBotLogOnly(groupId);
+        if (logOnly) {
+          console.log('[LOG_ONLY模式] 跳过发送今日總結，仅记录日志');
+          appendLog(groupId, `[LOG_ONLY模式] 今日總結内容: ${replyStr}`);
+          return;
+        }
+
         // 检查是否包含日期分段标记
         const hasDateSegments = replyStr.includes('<<今日>>') || 
                                 replyStr.includes('<<昨日>>') || 
@@ -2212,7 +2523,6 @@ async function handleTodaySummary(client, groupId) {
     appendLog(groupId, `[ERR] 发送今日总结失败: ${err.message}`);
   }
 }
-
 async function uploadFileToDify(filepath, user, type = 'image', apiKey) {
   const form = new FormData();
   form.append('file', fs.createReadStream(filepath));
@@ -3114,7 +3424,8 @@ function start(client) {
   // 如果服务器是 UTC，17:00 HKT = 09:00 UTC；如果服务器是 HKT，直接使用 17:00
   cron.schedule('0 17 * * *', async () => {
     console.log('[定时任务] 开始执行 17:00 AI 进度更新（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressUpdate(client, groupId);
     }
   }, {
@@ -3126,7 +3437,8 @@ function start(client) {
 
   cron.schedule('00 22 * * *', async () => {
     console.log('[定时任务] 开始执行 22:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressSummary(client, groupId);
     }
   }, {
@@ -3135,7 +3447,8 @@ function start(client) {
 
   cron.schedule('00 20 * * *', async () => {
     console.log('[定时任务] 开始执行 20:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
+    const groupsToProcess = targetGroups.filter(g => !adminGroups.includes(g));
+    for (const groupId of groupsToProcess) {
       await handleProgressSummary(client, groupId);
     }
   }, {
@@ -3152,24 +3465,6 @@ function start(client) {
     timezone: 'Asia/Hong_Kong'
   });
 
-  // 今天特殊定时任务：下午3点 AI 进度更新，下午4点 AI 进度总结
-  cron.schedule('0 15 * * *', async () => {
-    console.log('[特殊定时任务] 今天 15:00 AI 进度更新（香港时区）');
-    for (const groupId of targetGroups) {
-      await handleProgressUpdate(client, groupId);
-    }
-  }, {
-    timezone: 'Asia/Hong_Kong'
-  });
-
-  cron.schedule('0 16 * * *', async () => {
-    console.log('[特殊定时任务] 今天 16:00 AI 进度总结（香港时区）');
-    for (const groupId of targetGroups) {
-      await handleProgressSummary(client, groupId);
-    }
-  }, {
-    timezone: 'Asia/Hong_Kong'
-  });
 
   // 总结目标群组（往日总结和今日总结共用）
   const summaryGroups = process.env.SAFETYBOT_GROUPS
@@ -3195,6 +3490,44 @@ function start(client) {
   }, {
     timezone: 'Asia/Hong_Kong'
   });
+
+  // AdminGroups：每天 08:00、10:00 拉取当日最新群文件并下载到本地 tmp（香港时区）
+  // 先只做“拉取+下载+日志”，后续处理你说等下再碰
+  const runAdminGroupsDownload = async (whenLabel) => {
+    // whenLabel 只是“本次任务标签”（例如原计划 08:00/10:00），不代表当前触发时间
+    if (!adminGroups.length) {
+      console.log(`[AdminGroupFiles] 跳过本次 ${whenLabel}：AI_ANDACHEN_ADMIN_GROUPS 为空或未配置`);
+      return;
+    }
+    if (!GROUP_FILES_API_URL || !/^https?:\/\//i.test(String(GROUP_FILES_API_URL).trim())) {
+      const tip = `[AdminGroupFiles] 跳过本次 ${whenLabel}：未配置 GROUP_FILES_API_URL（需要 http(s) URL），当前=${JSON.stringify(GROUP_FILES_API_URL)}`;
+      console.warn(tip);
+      // 这里没有具体 gid，写一条全局日志即可
+      appendLog('admin-groups', tip);
+      return;
+    }
+    for (const gid of adminGroups) {
+      if (!gid) continue;
+      try {
+        console.log(`[AdminGroupFiles] 开始处理群=${gid} 标签=${whenLabel}`);
+        await handleAdminGroupDailyFileDownload(client, gid, whenLabel);
+      } catch (e) {
+        const msg = e?.message || String(e);
+        console.error('[AdminGroupFiles] 处理失败:', gid, msg);
+        appendLog(gid, `[AdminGroupFiles] 处理失败: ${msg}`);
+      }
+    }
+  };
+
+  cron.schedule('50 21 * * *', async () => {
+    console.log('[定时任务] 21:50 AdminGroups 群文件拉取+下载（香港时区）');
+    await runAdminGroupsDownload('21:50');
+  }, { timezone: 'Asia/Hong_Kong' });
+
+  // cron.schedule('0 22 * * *', async () => {
+  //   console.log('[定时任务] 22:00 AdminGroups 群文件拉取+下载（香港时区）');
+  //   await runAdminGroupsDownload('10:00');
+  // }, { timezone: 'Asia/Hong_Kong' });
 
   // 下午2:30定时任务：针对特定群组，先执行 AI 进度更新，然后执行 AI 进度总结
 }

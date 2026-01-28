@@ -520,9 +520,23 @@ function ensureDir(dir) {
 function appendLog(groupId, message) {
   const groupDir = path.join(LOG_DIR, groupId || 'default');
   ensureDir(groupDir);
-  const dateStr = new Date().toISOString().slice(0, 10);
+
+  // 1. 获取当前时间并手动偏移 8 小时处理文件名
+  const now = new Date();
+  const utc8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+  const dateStr = utc8Time.toISOString().slice(0, 10);
+
+  // 2. 格式化日志内容的时间戳
+  // 使用 'sv-SE' (瑞典语) 是一种小技巧，它能直接得到 YYYY-MM-DD HH:mm:ss 格式，非常整齐
+  const timestamp = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+
   const logFile = path.join(groupDir, `${dateStr}.log`);
-  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
+  
+  try {
+    fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
+  } catch (err) {
+    console.error('Failed to write log:', err);
+  }
 }
 
 function formatOTSummary(data) {
